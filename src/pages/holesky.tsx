@@ -1,4 +1,6 @@
-import { SmartRouter, SMART_ROUTER_ADDRESSES, SwapRouter } from '../lib/dist/evm'
+//@ts-nocheck
+
+import { SmartRouter, SMART_ROUTER_ADDRESSES, SwapRouter } from '../lib/dist/evm.js'
 // import { SMART_ROUTER_ADDRESSES, SwapRouter, SmartRouter as _smartRouter } from '@pancakeswap/smart-router'
 import { CurrencyAmount, Percent, TradeType} from '@pancakeswap/sdk'
 import { useCallback, useEffect, useMemo, useState } from 'react'
@@ -18,15 +20,15 @@ import '../App.css'
 import { holeskyTokens } from '../constants/holeskyTokens'
 import { createPublicClient, hexToBigInt, http } from 'viem'
 import { GraphQLClient } from 'graphql-request'
-import { Token } from '@cryptoalgebra/integral-sdk'
+import { Token } from '@pancakeswap/sdk'
 
 const chainId = holesky.id
-const swapFrom = new Token(chainId, holeskyTokens.usdt.address, holeskyTokens.usdt.decimals, holeskyTokens.usdt.symbol, holeskyTokens.usdt.name)
+const swapFrom = new Token(chainId, holeskyTokens.skate.address, holeskyTokens.skate.decimals, holeskyTokens.skate.symbol, holeskyTokens.skate.name)
 const swapTo = new Token(chainId, holeskyTokens.weth.address, holeskyTokens.weth.decimals, holeskyTokens.weth.symbol, holeskyTokens.weth.name)
 
 const publicClient = createPublicClient({
   chain: holesky,
-  transport: http('https://1rpc.io/holesky'),
+  transport: http('https://holesky.drpc.org'),
   batch: {
     multicall: {
       batchSize: 1024 * 200,
@@ -44,6 +46,8 @@ const v3SubgraphClient = new GraphQLClient('https://api.thegraph.com/subgraphs/n
 // const v2SubgraphClient = new GraphQLClient('https://proxy-worker-api.pancakeswap.com/bsc-exchange')
 
 
+
+//@ts-ignore
 const quoteProvider = SmartRouter.createQuoteProvider({
   onChainProvider: () => publicClient,
 })
@@ -68,28 +72,28 @@ function Main() {
   const { sendTransactionAsync } = useSendTransaction()
 
   const [trade, setTrade] = useState(null)
-  const amount = useMemo(() => CurrencyAmount.fromRawAmount(swapFrom, 10 ** swapFrom.decimals), [])
+  const amount = useMemo(() => CurrencyAmount.fromRawAmount(swapFrom, '100000000000000'), [])
+
+  console.log('amount', amount.toSignificant())
 
   const getBestRoute = useCallback(async () => {
-    const [v2Pools, v3Pools] = await Promise.all([
-      // SmartRouter.getV2CandidatePools({
-      //   onChainProvider: () => publicClient,
-      //   // v2SubgraphProvider: () => v2SubgraphClient,
-      //   v3SubgraphProvider: () => v3SubgraphClient,
-      //   currencyA: amount.currency,
-      //   currencyB: swapTo,
-        
-      // }),
-      null,
-      SmartRouter.getV3CandidatePools({
-        onChainProvider: () => publicClient,
-        subgraphProvider: () => v3SubgraphClient,
-        currencyA: amount.currency,
-        currencyB: swapTo
-      }),
-    ])
 
-    // const pools = [, ...v3Pools];
+    const v2Pools = await  SmartRouter.getV2CandidatePools({
+        onChainProvider: () => publicClient,
+        v2SubgraphProvider: () => SmartRouter.v2SubgraphClient,
+        v3SubgraphProvider: () => SmartRouter.v3SubgraphClient,
+        currencyA: amount.currency,
+        currencyB: swapTo 
+      })
+
+    const v3Pools = await SmartRouter.getV3CandidatePools({
+      onChainProvider: () => publicClient,
+      subgraphProvider: () => v3SubgraphClient,
+      currencyA: amount.currency,
+      currencyB: swapTo
+    })
+
+    const pools = [...v3Pools, ...v2Pools];
 
     console.log('v2 - ', v2Pools)
     console.log('v3 - ', v3Pools)
@@ -102,6 +106,17 @@ function Main() {
     //   poolProvider: SmartRouter.createStaticPoolProvider(pools),
     //   quoteProvider,
     //   quoterOptimization: true,
+
+    const bestTrade = await SmartRouter.getBestTrade(amount, swapTo, TradeType.EXACT_INPUT, {
+      gasPriceWei: () => publicClient.getGasPrice(),
+      maxHops: 4,
+      maxSplits: 3,
+      poolProvider: SmartRouter.createStaticPoolProvider(pools),
+      quoteProvider: SmartRouter.quoteProvider,
+      quoterOptimization: true,
+    })
+
+    console.log('BEST TRADE', bestTrade)
 
     // })
     // setTrade(trade)

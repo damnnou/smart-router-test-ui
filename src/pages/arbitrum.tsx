@@ -44,6 +44,7 @@ const config = createConfig({
 const v3SubgraphClient = new GraphQLClient('https://api.thegraph.com/subgraphs/name/iliaazhel/integral-core')
 // const v2SubgraphClient = new GraphQLClient('https://proxy-worker-api.pancakeswap.com/bsc-exchange')
 
+// @ts-ignore
 const quoteProvider = SmartRouter.createQuoteProvider({
   onChainProvider: () => publicClient,
 })
@@ -72,6 +73,7 @@ function Main() {
 
   const getBestRoute = useCallback(async () => {
     const [v2Pools, v3Pools] = await Promise.all([
+      //@ts-ignore
       SmartRouter.getV2CandidatePools({
         onChainProvider: () => publicClient,
         // v2SubgraphProvider: () => v2SubgraphClient,
@@ -80,6 +82,7 @@ function Main() {
         currencyB: swapTo,
         
       }),
+      //@ts-ignore
       SmartRouter.getV3CandidatePools({
         onChainProvider: () => publicClient,
         subgraphProvider: () => v3SubgraphClient,
@@ -93,10 +96,12 @@ function Main() {
     console.log('v2 - ', v2Pools)
     console.log('v3 - ', v3Pools)
 
+    //@ts-ignore
     const trade = await SmartRouter.getBestTrade(amount, swapTo, TradeType.EXACT_INPUT, {
         gasPriceWei: () => publicClient.getGasPrice(),
         maxHops: 2,
         maxSplits: 2,
+        //@ts-ignore
         poolProvider: SmartRouter.createStaticPoolProvider(pools),
         quoteProvider,
         quoterOptimization: true,

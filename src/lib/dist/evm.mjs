@@ -1,26 +1,24 @@
-import { Percent, ERC20Token, WNATIVE, Pair, TradeType, ZERO, Price, CurrencyAmount, Fraction, ONE, Native, validateAndParseAddress, erc20Abi, Token } from '@pancakeswap/sdk';
-import { ChainId, getLlamaChainName } from '@pancakeswap/chains';
-import { USDC, USDT, WBTC_ETH, BUSD, bscTokens, bscTestnetTokens, arbitrumTokens, arbitrumGoerliTokens, polygonZkEvmTokens, polygonZkEvmTestnetTokens, zksyncTokens, zkSyncTestnetTokens, lineaTokens, lineaTestnetTokens, opBnbTokens, opBnbTestnetTokens, baseTokens, baseTestnetTokens, scrollSepoliaTokens, sepoliaTokens, arbSepoliaTokens, baseSepoliaTokens, ethereumTokens, goerliTestnetTokens, getTokensByChain } from '@pancakeswap/tokens';
-import { encodePacked, getAddress, encodeFunctionData, decodeFunctionResult, getContract } from 'viem';
-import { GAUGES_CONFIG, GaugeType } from '@pancakeswap/gauges';
+import { Percent, ERC20Token, TradeType, ZERO, ONE, CurrencyAmount, ONE_HUNDRED_PERCENT, Price, Fraction, Native, Pair, Token, validateAndParseAddress } from '@pancakeswap/sdk';
+export { CurrencyAmount, Native, Percent } from '@pancakeswap/sdk';
+import invariant5 from 'tiny-invariant';
 import flatMap from 'lodash/flatMap.js';
-import memoize2 from 'lodash/memoize.js';
+import memoize from 'lodash/memoize.js';
 import uniqBy from 'lodash/uniqBy.js';
-import { computePoolAddress, Pool, FeeAmount, ADDRESS_ZERO, Tick, SelfPermit, Payments, toHex, Position, pancakeV3PoolABI, DEPLOYER_ADDRESSES, parseProtocolFees, TickList, NonfungiblePositionManager, Multicall } from '@pancakeswap/v3-sdk';
-import { getSwapOutput, getStableSwapPools, getQuoteExactIn, getQuoteExactOut } from '@pancakeswap/stable-swap-sdk';
+import { createPublicClient, http, keccak256, encodePacked, getCreate2Address, getAddress, encodeFunctionData, decodeFunctionResult, getContract, BaseError, TimeoutError } from 'viem';
+import { computePoolAddress } from '@cryptoalgebra/integral-sdk';
+import { FeeAmount, ADDRESS_ZERO, Pool, parseProtocolFees, SelfPermit, Payments, toHex, Position, TickList, NonfungiblePositionManager, Multicall } from '@pancakeswap/v3-sdk';
 import { CurrencyAmount as CurrencyAmount$1 } from '@pancakeswap/swap-sdk-core';
 import debug from 'debug';
-import invariant2 from 'tiny-invariant';
 import mapValues from 'lodash/mapValues.js';
 import FixedReverseHeap from 'mnemonist/fixed-reverse-heap.js';
 import Queue from 'mnemonist/queue.js';
 import sum from 'lodash/sum.js';
 import chunk from 'lodash/chunk.js';
-import { gql } from 'graphql-request';
+import { gql, GraphQLClient } from 'graphql-request';
 import { deserializeToken } from '@pancakeswap/token-lists';
 import retry from 'async-retry';
-import { multicallByGasLimit } from '@pancakeswap/multicall';
 import stats from 'stats-lite';
+import { holesky } from 'viem/chains';
 import { z } from 'zod';
 
 var __defProp = Object.defineProperty;
@@ -28,286 +26,130 @@ var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
 };
-var BIG_INT_TEN = 10n;
-var BIPS_BASE = 10000n;
-var MIN_BNB = BIG_INT_TEN ** 16n;
-var BETTER_TRADE_LESS_HOPS_THRESHOLD = new Percent(50n, BIPS_BASE);
+var BIG_INT_TEN = BigInt(10);
+var BIPS_BASE = BigInt(1e4);
+var MIN_BNB = BIG_INT_TEN ** BigInt(16);
+var BETTER_TRADE_LESS_HOPS_THRESHOLD = new Percent(BigInt(50), BIPS_BASE);
+
+// evm/chains/src/chainId.ts
+var ChainId = /* @__PURE__ */ ((ChainId4) => {
+  ChainId4[ChainId4["HOLESKY"] = 17e3] = "HOLESKY";
+  return ChainId4;
+})(ChainId || {});
+
+// evm/chains/src/chainNames.ts
+var chainNames = {
+  [17e3 /* HOLESKY */]: "holesky"
+};
+Object.entries(chainNames).reduce((acc, [chainId, chainName]) => {
+  return {
+    [chainName]: chainId,
+    ...acc
+  };
+}, {});
+var defiLlamaChainNames = {
+  [17e3 /* HOLESKY */]: ""
+};
+
+// evm/chains/src/utils.ts
+function getLlamaChainName(chainId) {
+  return defiLlamaChainNames[chainId];
+}
+
+// evm/constants/addresses.ts
+var POOL_INIT_CODE_HASH = "0xf96d2474815c32e070cd63233f06af5413efc5dcb430aee4ff18cc29007c562d";
+var ALGEBRA_POOL_DEPLOYER = "0x69D57B9D705eaD73a5d2f2476C30c55bD755cc2F";
+var ALGEBRA_QUOTER = "0x38A5C36FA8c8c9E4649b51FCD61810B14e7ce047";
+var SWAP_ROUTER_02 = "0x16AB999fb9f1fF6633c2b6b1C707721377887921";
+var MIXED_ROUTE_QUOTER_V1 = "0x9b7b1f3d29475f54e31e10a74e04b8437585f6da";
 var holeskyTokens = {
   weth: new ERC20Token(
     17e3,
     "0x94373a4919b3240d86ea41593d5eba789fef3848",
-    6,
+    18,
     "WETH",
     "WETH"
   ),
   usdt: new ERC20Token(
     17e3,
     "0x7d98346b3b000c55904918e3d9e2fc3f94683b01",
-    6,
+    18,
     "USDT",
     "USDT"
   ),
   skate: new ERC20Token(
     17e3,
     "0x2331a24b97acf5eb35e7d627cdf8ebf07f20c305",
-    6,
+    18,
     "SKATE",
     "SKATEboard"
   ),
   usdc: new ERC20Token(
     17e3,
     "0x42e87bddd77b0c4122b5dd4a8c62872610dcefef",
-    6,
+    18,
     "USDC",
     "USD Coin"
   )
 };
 
-// evm/constants/addresses.ts
-var ALGEBRA_QUOTER = "0x38A5C36FA8c8c9E4649b51FCD61810B14e7ce047";
-var ALGEBRA_ROUTER = "0xEC250E6856e14A494cb1f0abC61d72348c79F418";
-var ROUTER_V2 = "0xeB0DAADf31cC744736471520fdc767e7681945b3";
-var MIXED_ROUTE_QUOTER_V1 = "0x9b7b1f3d29475f54e31e10a74e04b8437585f6da";
-
 // evm/constants/exchange.ts
 var SMART_ROUTER_ADDRESSES = {
-  [ChainId.ETHEREUM]: "0x13f4EA83D0bd40E75C8222255bc855a974568Dd4",
-  [ChainId.GOERLI]: "0x9a489505a00cE272eAa5e07Dba6491314CaE3796",
-  [ChainId.BSC]: "0x13f4EA83D0bd40E75C8222255bc855a974568Dd4",
-  [ChainId.BSC_TESTNET]: "0x9a489505a00cE272eAa5e07Dba6491314CaE3796",
-  [ChainId.ARBITRUM_ONE]: "0x32226588378236Fd0c7c4053999F88aC0e5cAc77",
-  [ChainId.ARBITRUM_GOERLI]: "0xBee35e9Cbd9595355Eaf5DE2055EF525adB41bE6",
-  [ChainId.POLYGON_ZKEVM]: "0x678Aa4bF4E210cf2166753e054d5b7c31cc7fa86",
-  [ChainId.POLYGON_ZKEVM_TESTNET]: "0x365C5F0B816828936320ea143e337fbA7D1b911E",
-  [ChainId.ZKSYNC]: "0xf8b59f3c3Ab33200ec80a8A58b2aA5F5D2a8944C",
-  [ChainId.ZKSYNC_TESTNET]: "0x4DC9186c6C5F7dd430c7b6D8D513076637902241",
-  [ChainId.LINEA]: "0x678Aa4bF4E210cf2166753e054d5b7c31cc7fa86",
-  [ChainId.LINEA_TESTNET]: "0x21d809FB4052bb1807cfe2418bA638d72F4aEf87",
-  [ChainId.OPBNB]: "0x678Aa4bF4E210cf2166753e054d5b7c31cc7fa86",
-  [ChainId.OPBNB_TESTNET]: "0xf317eD77Baed624d0EA2384AA88D91B774a9b009",
-  [ChainId.BASE]: "0x678Aa4bF4E210cf2166753e054d5b7c31cc7fa86",
-  [ChainId.BASE_TESTNET]: "0xDDC44b8507B4Ca992fB60F0ECdF5651A87668509",
-  [ChainId.SCROLL_SEPOLIA]: "0xDDC44b8507B4Ca992fB60F0ECdF5651A87668509",
-  [ChainId.SEPOLIA]: "0x678Aa4bF4E210cf2166753e054d5b7c31cc7fa86",
-  [ChainId.ARBITRUM_SEPOLIA]: "0x678Aa4bF4E210cf2166753e054d5b7c31cc7fa86",
-  [ChainId.BASE_SEPOLIA]: "0x678Aa4bF4E210cf2166753e054d5b7c31cc7fa86",
-  [17e3]: ALGEBRA_ROUTER
+  [17e3 /* HOLESKY */]: SWAP_ROUTER_02
 };
 var V2_ROUTER_ADDRESS = {
-  [ChainId.ETHEREUM]: "0xEfF92A263d31888d860bD50809A8D171709b7b1c",
-  [ChainId.GOERLI]: "0xEfF92A263d31888d860bD50809A8D171709b7b1c",
-  [ChainId.BSC]: "0x10ED43C718714eb63d5aA57B78B54704E256024E",
-  [ChainId.BSC_TESTNET]: "0xD99D1c33F9fC3444f8101754aBC46c52416550D1",
-  [ChainId.ARBITRUM_ONE]: "0x8cFe327CEc66d1C090Dd72bd0FF11d690C33a2Eb",
-  [ChainId.ARBITRUM_GOERLI]: "0xB8054A1F11090fbe82B45aC3c72e86732f8355DC",
-  [ChainId.POLYGON_ZKEVM]: "0x8cFe327CEc66d1C090Dd72bd0FF11d690C33a2Eb",
-  [ChainId.POLYGON_ZKEVM_TESTNET]: "0x1ac9F6489487a282961b3929bCFA0a773251315E",
-  [ChainId.ZKSYNC]: "0x5aEaF2883FBf30f3D62471154eDa3C0c1b05942d",
-  [ChainId.ZKSYNC_TESTNET]: "0xA0Fbd5d1474950bc9417FB00f9d4e2ee0385c560",
-  [ChainId.LINEA]: "0x8cFe327CEc66d1C090Dd72bd0FF11d690C33a2Eb",
-  [ChainId.LINEA_TESTNET]: "0xD7A304138D50C125733d1fE8a2041199E4944Aa1",
-  [ChainId.OPBNB]: "0x8cFe327CEc66d1C090Dd72bd0FF11d690C33a2Eb",
-  [ChainId.OPBNB_TESTNET]: "0x62FF25CFD64E55673168c3656f4902bD7Aa5F0f4",
-  [ChainId.BASE]: "0x8cFe327CEc66d1C090Dd72bd0FF11d690C33a2Eb",
-  [ChainId.BASE_TESTNET]: "0xC259d1D3476558630d83b0b60c105ae958382792",
-  [ChainId.SCROLL_SEPOLIA]: "0x715303D2eF7dA7FFAbF637651D71FD11d41fAf7F",
-  [ChainId.SEPOLIA]: "0x8cFe327CEc66d1C090Dd72bd0FF11d690C33a2Eb",
-  [ChainId.ARBITRUM_SEPOLIA]: "0x8cFe327CEc66d1C090Dd72bd0FF11d690C33a2Eb",
-  [ChainId.BASE_SEPOLIA]: "0x8cFe327CEc66d1C090Dd72bd0FF11d690C33a2Eb",
-  [17e3]: ROUTER_V2
+  [17e3 /* HOLESKY */]: "0xeB0DAADf31cC744736471520fdc767e7681945b3"
 };
 var STABLE_SWAP_INFO_ADDRESS = {
-  [ChainId.ETHEREUM]: "",
-  [ChainId.GOERLI]: "",
-  [ChainId.BSC]: "0xa680d27f63Fa5E213C502d1B3Ca1EB6a3C1b31D6",
-  [ChainId.BSC_TESTNET]: "0xaE6C14AAA753B3FCaB96149e1E10Bc4EDF39F546",
-  [ChainId.ARBITRUM_ONE]: "",
-  [ChainId.ARBITRUM_GOERLI]: "",
-  [ChainId.POLYGON_ZKEVM]: "",
-  [ChainId.POLYGON_ZKEVM_TESTNET]: "",
-  [ChainId.ZKSYNC]: "",
-  [ChainId.ZKSYNC_TESTNET]: "",
-  [ChainId.LINEA]: "",
-  [ChainId.LINEA_TESTNET]: "",
-  [ChainId.OPBNB]: "",
-  [ChainId.OPBNB_TESTNET]: "",
-  [ChainId.BASE]: "",
-  [ChainId.BASE_TESTNET]: "",
-  [ChainId.SCROLL_SEPOLIA]: "",
-  [ChainId.SEPOLIA]: "",
-  [ChainId.ARBITRUM_SEPOLIA]: "",
-  [ChainId.BASE_SEPOLIA]: "",
-  [17e3]: ""
+  [17e3 /* HOLESKY */]: ""
 };
 var BASES_TO_CHECK_TRADES_AGAINST = {
-  [ChainId.ETHEREUM]: [WNATIVE[ChainId.ETHEREUM], USDC[ChainId.ETHEREUM], USDT[ChainId.ETHEREUM], WBTC_ETH],
-  [ChainId.GOERLI]: [WNATIVE[ChainId.GOERLI], USDC[ChainId.GOERLI], BUSD[ChainId.GOERLI]],
-  [ChainId.BSC]: [
-    bscTokens.wbnb,
-    bscTokens.cake,
-    bscTokens.busd,
-    bscTokens.usdt,
-    bscTokens.btcb,
-    bscTokens.eth,
-    bscTokens.usdc
-  ],
-  [ChainId.BSC_TESTNET]: [bscTestnetTokens.wbnb, bscTestnetTokens.cake, bscTestnetTokens.busd],
-  [ChainId.ARBITRUM_ONE]: [arbitrumTokens.weth, arbitrumTokens.usdt, arbitrumTokens.usdc],
-  [ChainId.ARBITRUM_GOERLI]: [arbitrumGoerliTokens.weth, arbitrumGoerliTokens.usdc],
-  [ChainId.POLYGON_ZKEVM]: [polygonZkEvmTokens.weth, polygonZkEvmTokens.usdt, polygonZkEvmTokens.usdc],
-  [ChainId.POLYGON_ZKEVM_TESTNET]: [polygonZkEvmTestnetTokens.weth, polygonZkEvmTestnetTokens.usdt],
-  [ChainId.ZKSYNC]: [zksyncTokens.usdc, zksyncTokens.weth],
-  [ChainId.ZKSYNC_TESTNET]: [zkSyncTestnetTokens.usdc, zkSyncTestnetTokens.weth],
-  [ChainId.LINEA]: [lineaTokens.usdc, lineaTokens.weth],
-  [ChainId.LINEA_TESTNET]: [lineaTestnetTokens.usdc, lineaTestnetTokens.weth],
-  [ChainId.OPBNB]: [opBnbTokens.wbnb, opBnbTokens.usdt],
-  [ChainId.OPBNB_TESTNET]: [opBnbTestnetTokens.usdc, opBnbTestnetTokens.wbnb],
-  [ChainId.BASE]: [baseTokens.usdc, baseTokens.weth],
-  [ChainId.BASE_TESTNET]: [baseTestnetTokens.usdc, baseTestnetTokens.weth],
-  [ChainId.SCROLL_SEPOLIA]: [scrollSepoliaTokens.usdc, scrollSepoliaTokens.weth],
-  [ChainId.SEPOLIA]: [sepoliaTokens.usdc, sepoliaTokens.weth],
-  [ChainId.ARBITRUM_SEPOLIA]: [arbSepoliaTokens.usdc, arbSepoliaTokens.weth],
-  [ChainId.BASE_SEPOLIA]: [baseSepoliaTokens.usdc, baseSepoliaTokens.weth],
-  [17e3]: [holeskyTokens.usdc, holeskyTokens.weth]
+  [17e3 /* HOLESKY */]: [holeskyTokens.usdt, holeskyTokens.weth]
 };
-var czusd = new ERC20Token(ChainId.BSC, "0xE68b79e51bf826534Ff37AA9CeE71a3842ee9c70", 18, "CZUSD", "CZUSD");
-var ADDITIONAL_BASES = {
-  [ChainId.BSC]: {
-    // SNFTS-SFUND
-    [bscTokens.snfts.address]: [bscTokens.sfund],
-    [bscTokens.ankr.address]: [bscTokens.ankrbnb],
-    [bscTokens.ankrbnb.address]: [bscTokens.ankrETH, bscTokens.ankr],
-    [bscTokens.ankrETH.address]: [bscTokens.ankrbnb],
-    // REVV - EDU
-    [bscTokens.revv.address]: [bscTokens.edu],
-    [bscTokens.edu.address]: [bscTokens.revv],
-    // unshETH - USH
-    [bscTokens.unshETH.address]: [bscTokens.ush],
-    [bscTokens.ush.address]: [bscTokens.unshETH],
-    [bscTokens.tusd.address]: [bscTokens.usdd],
-    [bscTokens.usdd.address]: [bscTokens.tusd],
-    [bscTokens.mpendle.address]: [bscTokens.pendle],
-    [bscTokens.pendle.address]: [bscTokens.mpendle],
-    [bscTokens.mdlp.address]: [bscTokens.dlp],
-    [bscTokens.dlp.address]: [bscTokens.mdlp],
-    // pancakeswap/pancake-frontend#7909
-    // LSDT
-    "0xAa83Bb1Be2a74AaA8795a8887054919A0Ea96BFA": [czusd],
-    // GEM
-    "0x701F1ed50Aa5e784B8Fb89d1Ba05cCCd627839a7": [czusd],
-    // DOGD
-    "0x99F4cc2BAE97F82A823CA80DcAe52EF972B7F270": [czusd]
-  },
-  [ChainId.ETHEREUM]: {
-    // alETH - ALCX
-    [ethereumTokens.alcx.address]: [ethereumTokens.alETH],
-    [ethereumTokens.alETH.address]: [ethereumTokens.alcx],
-    // rETH - ETH
-    [ethereumTokens.weth.address]: [ethereumTokens.rETH]
-  },
-  [ChainId.BASE]: {
-    // axlusdc - USDbC
-    [baseTokens.axlusdc.address]: [baseTokens.usdbc],
-    [baseTokens.usdbc.address]: [baseTokens.axlusdc]
-  },
-  [ChainId.ARBITRUM_ONE]: {
-    [arbitrumTokens.mpendle.address]: [arbitrumTokens.pendle],
-    [arbitrumTokens.pendle.address]: [arbitrumTokens.mpendle]
-  }
-};
-var CUSTOM_BASES = {
-  [ChainId.BSC]: {
-    [bscTokens.axlusdc.address]: [bscTokens.usdt]
-  }
-};
+var ADDITIONAL_BASES = {};
+var CUSTOM_BASES = {};
 
 // evm/constants/gasModel/stableSwap.ts
-var BASE_SWAP_COST_STABLE_SWAP = 180000n;
-var COST_PER_EXTRA_HOP_STABLE_SWAP = 70000n;
+var BASE_SWAP_COST_STABLE_SWAP = BigInt(18e4);
+var COST_PER_EXTRA_HOP_STABLE_SWAP = BigInt(7e4);
 
 // evm/constants/gasModel/v2.ts
-var BASE_SWAP_COST_V2 = 135000n;
-var COST_PER_EXTRA_HOP_V2 = 50000n;
-var COST_PER_UNINIT_TICK = 0n;
+var BASE_SWAP_COST_V2 = BigInt(135e3);
+var COST_PER_EXTRA_HOP_V2 = BigInt(5e4);
+
+// evm/constants/gasModel/v3.ts
+var COST_PER_UNINIT_TICK = BigInt(0);
 var BASE_SWAP_COST_V3 = (id) => {
   switch (id) {
-    case ChainId.BSC:
-    case ChainId.BSC_TESTNET:
-    case ChainId.ETHEREUM:
-    case ChainId.GOERLI:
-    case ChainId.ZKSYNC:
-    case ChainId.ZKSYNC_TESTNET:
-    case ChainId.POLYGON_ZKEVM:
-    case ChainId.POLYGON_ZKEVM_TESTNET:
-    case ChainId.OPBNB:
-    case ChainId.OPBNB_TESTNET:
-    case 17e3:
-      return 2000n;
+    case 17e3 /* HOLESKY */:
+      return BigInt(2e3);
     default:
-      return 0n;
+      return BigInt(0);
   }
 };
 var COST_PER_INIT_TICK = (id) => {
   switch (id) {
-    case ChainId.BSC:
-    case ChainId.BSC_TESTNET:
-    case ChainId.ETHEREUM:
-    case ChainId.GOERLI:
-    case ChainId.ZKSYNC:
-    case ChainId.ZKSYNC_TESTNET:
-    case ChainId.POLYGON_ZKEVM:
-    case ChainId.POLYGON_ZKEVM_TESTNET:
-    case ChainId.OPBNB:
-    case ChainId.OPBNB_TESTNET:
-    case 17e3:
-      return 31000n;
+    case 17e3 /* HOLESKY */:
+      return BigInt(31e3);
     default:
-      return 0n;
+      return BigInt(0);
   }
 };
 var COST_PER_HOP_V3 = (id) => {
   switch (id) {
-    case ChainId.BSC:
-    case ChainId.BSC_TESTNET:
-    case ChainId.ETHEREUM:
-    case ChainId.GOERLI:
-    case ChainId.ZKSYNC:
-    case ChainId.ZKSYNC_TESTNET:
-    case ChainId.POLYGON_ZKEVM:
-    case ChainId.POLYGON_ZKEVM_TESTNET:
-    case ChainId.OPBNB:
-    case ChainId.OPBNB_TESTNET:
-    case 17e3:
-      return 80000n;
+    case 17e3 /* HOLESKY */:
+      return BigInt(8e4);
     default:
-      return 0n;
+      return BigInt(0);
   }
 };
 
 // evm/constants/gasModel/index.ts
 var usdGasTokensByChain = {
-  [ChainId.ETHEREUM]: [ethereumTokens.usdt],
-  [ChainId.GOERLI]: [goerliTestnetTokens.usdc],
-  [ChainId.BSC]: [bscTokens.usdt],
-  [ChainId.BSC_TESTNET]: [bscTestnetTokens.usdt],
-  [ChainId.ARBITRUM_ONE]: [arbitrumTokens.usdc],
-  [ChainId.ARBITRUM_GOERLI]: [arbitrumGoerliTokens.usdc],
-  [ChainId.POLYGON_ZKEVM]: [polygonZkEvmTokens.usdt],
-  [ChainId.POLYGON_ZKEVM_TESTNET]: [polygonZkEvmTestnetTokens.usdt],
-  [ChainId.ZKSYNC]: [zksyncTokens.usdc],
-  [ChainId.ZKSYNC_TESTNET]: [zkSyncTestnetTokens.usdc],
-  [ChainId.LINEA]: [lineaTokens.usdc],
-  [ChainId.LINEA_TESTNET]: [lineaTestnetTokens.usdc],
-  [ChainId.OPBNB]: [opBnbTokens.usdt],
-  [ChainId.OPBNB_TESTNET]: [opBnbTestnetTokens.usdc],
-  [ChainId.BASE]: [baseTokens.usdc],
-  [ChainId.BASE_TESTNET]: [baseTestnetTokens.usdc],
-  [ChainId.SCROLL_SEPOLIA]: [scrollSepoliaTokens.usdc],
-  [ChainId.SEPOLIA]: [scrollSepoliaTokens.usdc],
-  [ChainId.ARBITRUM_SEPOLIA]: [arbSepoliaTokens.usdc],
-  [ChainId.BASE_SEPOLIA]: [baseSepoliaTokens.usdc],
-  [17e3]: [holeskyTokens.usdt]
+  [17e3 /* HOLESKY */]: [holeskyTokens.usdt]
 };
+
+// evm/constants/multicall.ts
 var DEFAULT = {
   defaultConfig: {
     gasLimitPerCall: 1e6
@@ -320,344 +162,234 @@ var DEFAULT = {
   }
 };
 var BATCH_MULTICALL_CONFIGS = {
-  [ChainId.BSC_TESTNET]: DEFAULT,
-  [ChainId.BSC]: DEFAULT,
-  [ChainId.ETHEREUM]: DEFAULT,
-  [ChainId.GOERLI]: DEFAULT,
-  [ChainId.ARBITRUM_ONE]: DEFAULT,
-  [ChainId.ARBITRUM_GOERLI]: DEFAULT,
-  [ChainId.POLYGON_ZKEVM]: {
-    defaultConfig: {
-      gasLimitPerCall: 5e5
-    },
-    gasErrorFailureOverride: {
-      gasLimitPerCall: 15e5
-    },
-    successRateFailureOverrides: {
-      gasLimitPerCall: 15e5
-    }
-  },
-  [ChainId.POLYGON_ZKEVM_TESTNET]: {
-    defaultConfig: {
-      gasLimitPerCall: 5e5
-    },
-    gasErrorFailureOverride: {
-      gasLimitPerCall: 15e5
-    },
-    successRateFailureOverrides: {
-      gasLimitPerCall: 15e5
-    }
-  },
-  [ChainId.ZKSYNC]: {
-    defaultConfig: {
-      gasLimitPerCall: 1e6
-    },
-    gasErrorFailureOverride: {
-      gasLimitPerCall: 2e6
-    },
-    successRateFailureOverrides: {
-      gasLimitPerCall: 3e6
-    }
-  },
-  [ChainId.ZKSYNC_TESTNET]: DEFAULT,
-  [ChainId.LINEA]: DEFAULT,
-  [ChainId.LINEA_TESTNET]: DEFAULT,
-  [ChainId.BASE]: {
-    ...DEFAULT,
-    defaultConfig: {
-      ...DEFAULT.defaultConfig,
-      dropUnexecutedCalls: true
-    }
-  },
-  [ChainId.BASE_TESTNET]: DEFAULT,
-  [ChainId.OPBNB]: DEFAULT,
-  [ChainId.OPBNB_TESTNET]: DEFAULT,
-  [ChainId.SCROLL_SEPOLIA]: DEFAULT,
-  [ChainId.SEPOLIA]: DEFAULT,
-  [ChainId.ARBITRUM_SEPOLIA]: DEFAULT,
-  [ChainId.BASE_SEPOLIA]: DEFAULT,
-  [17e3]: DEFAULT
+  [17e3 /* HOLESKY */]: DEFAULT
 };
+
+// evm/constants/v3.ts
 var V2_FEE_PATH_PLACEHOLDER = 8388608;
 var MSG_SENDER = "0x0000000000000000000000000000000000000001";
 var ADDRESS_THIS = "0x0000000000000000000000000000000000000002";
 var MIXED_ROUTE_QUOTER_ADDRESSES = {
-  [ChainId.ETHEREUM]: "0x678Aa4bF4E210cf2166753e054d5b7c31cc7fa86",
-  [ChainId.GOERLI]: "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997",
-  [ChainId.BSC]: "0x678Aa4bF4E210cf2166753e054d5b7c31cc7fa86",
-  [ChainId.BSC_TESTNET]: "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997",
-  [ChainId.ARBITRUM_ONE]: "0x5457fa0318753E9eaC2d17DFfdb6383da207d705",
-  [ChainId.ARBITRUM_GOERLI]: "0x805e03325116Da555Babf012C7bd490Bdd6EEa95",
-  [ChainId.POLYGON_ZKEVM]: "0x4c650FB471fe4e0f476fD3437C3411B1122c4e3B",
-  [ChainId.POLYGON_ZKEVM_TESTNET]: "0x9CFCdecF9e37Bf25023A2B42537127c1089600fE",
-  [ChainId.ZKSYNC]: "0x9B1edFB3848660402E4f1DC25733764e80aA627A",
-  [ChainId.ZKSYNC_TESTNET]: "0x7931c270f59Cb1c2617e87976689bD6803afF50a",
-  [ChainId.LINEA]: "0x4c650FB471fe4e0f476fD3437C3411B1122c4e3B",
-  [ChainId.LINEA_TESTNET]: "0x7d3ed219e45637Cfa77b1a634d0489a2950d1B7F",
-  [ChainId.OPBNB]: "0x4c650FB471fe4e0f476fD3437C3411B1122c4e3B",
-  [ChainId.OPBNB_TESTNET]: "0x118F080BF268aa7De4bE6d5e579D926903E7d6Cb",
-  [ChainId.BASE]: "0x4c650FB471fe4e0f476fD3437C3411B1122c4e3B",
-  [ChainId.BASE_TESTNET]: "0x9d4277f1D41CCB30C0e91f7d1bBA2A739E19032C",
-  [ChainId.SCROLL_SEPOLIA]: "0x9d4277f1D41CCB30C0e91f7d1bBA2A739E19032C",
-  [ChainId.SEPOLIA]: "0x4c650FB471fe4e0f476fD3437C3411B1122c4e3B",
-  [ChainId.ARBITRUM_SEPOLIA]: "0x4c650FB471fe4e0f476fD3437C3411B1122c4e3B",
-  [ChainId.BASE_SEPOLIA]: "0x4c650FB471fe4e0f476fD3437C3411B1122c4e3B",
-  [17e3]: MIXED_ROUTE_QUOTER_V1
+  [17e3 /* HOLESKY */]: MIXED_ROUTE_QUOTER_V1
 };
 var V3_QUOTER_ADDRESSES = {
-  [ChainId.ETHEREUM]: "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997",
-  [ChainId.GOERLI]: "0xbC203d7f83677c7ed3F7acEc959963E7F4ECC5C2",
-  [ChainId.BSC]: "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997",
-  [ChainId.BSC_TESTNET]: "0xbC203d7f83677c7ed3F7acEc959963E7F4ECC5C2",
-  [ChainId.ARBITRUM_ONE]: "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997",
-  [ChainId.ARBITRUM_GOERLI]: "0xC0F9488345ed89105b3bd135150905F718Bb254E",
-  [ChainId.POLYGON_ZKEVM]: "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997",
-  [ChainId.POLYGON_ZKEVM_TESTNET]: "0xA9c08a89Be4503E04Fd84Eadad4320eE34e9B11D",
-  [ChainId.ZKSYNC]: "0x3d146FcE6c1006857750cBe8aF44f76a28041CCc",
-  [ChainId.ZKSYNC_TESTNET]: "0x43e273b4Ffd6bC9d6Be1a862D19893549c3b9b46",
-  [ChainId.LINEA]: "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997",
-  [ChainId.LINEA_TESTNET]: "0x669254936caE83bE34008BdFdeeA63C902497B31",
-  [ChainId.OPBNB]: "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997",
-  [ChainId.OPBNB_TESTNET]: "0x052a99849Ef2e13a5CB28275862991671D4b6fF5",
-  [ChainId.BASE]: "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997",
-  [ChainId.BASE_TESTNET]: "0x6cc56b20bf8C4FfD58050D15AbA2978A745CC691",
-  [ChainId.SCROLL_SEPOLIA]: "0x6cc56b20bf8C4FfD58050D15AbA2978A745CC691",
-  [ChainId.SEPOLIA]: "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997",
-  [ChainId.ARBITRUM_SEPOLIA]: "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997",
-  [ChainId.BASE_SEPOLIA]: "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997",
-  [17e3]: ALGEBRA_QUOTER
-};
-var TICK_LENS_MAINNET_ADDRESS = "0x9a489505a00cE272eAa5e07Dba6491314CaE3796";
-var TICK_LENS_TESTNET_ADDRESS = "0xac1cE734566f390A94b00eb9bf561c2625BF44ea";
-var V3_TICK_LENS_ADDRESSES = {
-  [ChainId.ETHEREUM]: TICK_LENS_MAINNET_ADDRESS,
-  [ChainId.GOERLI]: TICK_LENS_TESTNET_ADDRESS,
-  [ChainId.BSC]: TICK_LENS_MAINNET_ADDRESS,
-  [ChainId.BSC_TESTNET]: TICK_LENS_TESTNET_ADDRESS,
-  [ChainId.ARBITRUM_ONE]: TICK_LENS_MAINNET_ADDRESS,
-  [ChainId.ARBITRUM_GOERLI]: "0x2F6dE77f29a0065398837DD4a485c48eE8D13afc",
-  [ChainId.POLYGON_ZKEVM]: TICK_LENS_MAINNET_ADDRESS,
-  [ChainId.POLYGON_ZKEVM_TESTNET]: "0x1415dc83bc3d87089ab533B196D14d9C49828C69",
-  [ChainId.ZKSYNC]: "0x7b08978FA77910f77d273c353C62b5BFB9E6D17B",
-  [ChainId.ZKSYNC_TESTNET]: "0x",
-  [ChainId.LINEA]: TICK_LENS_MAINNET_ADDRESS,
-  [ChainId.LINEA_TESTNET]: "0xEf60E2B3bB419891Aa2541b805f5AcEA991C181F",
-  [ChainId.OPBNB]: TICK_LENS_MAINNET_ADDRESS,
-  [ChainId.OPBNB_TESTNET]: "0x15571d4a7D08e16108b97cf7c80Ffd5C3fcb9657",
-  [ChainId.BASE]: TICK_LENS_MAINNET_ADDRESS,
-  [ChainId.BASE_TESTNET]: "0x66A9870FF7707936B0B0278cF999C5f2Ac2e42F5",
-  [ChainId.SCROLL_SEPOLIA]: "0x66A9870FF7707936B0B0278cF999C5f2Ac2e42F5",
-  [ChainId.SEPOLIA]: TICK_LENS_MAINNET_ADDRESS,
-  [ChainId.ARBITRUM_SEPOLIA]: TICK_LENS_MAINNET_ADDRESS,
-  [ChainId.BASE_SEPOLIA]: TICK_LENS_MAINNET_ADDRESS,
-  [17e3]: "0x"
+  [17e3 /* HOLESKY */]: ALGEBRA_QUOTER
 };
 
-// evm/abis/FeeOnTransferDetector.ts
-var feeOnTransferDetectorAbi = [
-  {
-    inputs: [
-      {
-        internalType: "address",
-        name: "_factoryV2",
-        type: "address"
-      }
-    ],
-    stateMutability: "nonpayable",
-    type: "constructor"
-  },
-  {
-    inputs: [],
-    name: "PairLookupFailed",
-    type: "error"
-  },
-  {
-    inputs: [],
-    name: "SameToken",
-    type: "error"
-  },
-  {
-    inputs: [
-      {
-        internalType: "address[]",
-        name: "tokens",
-        type: "address[]"
-      },
-      {
-        internalType: "address",
-        name: "baseToken",
-        type: "address"
-      },
-      {
-        internalType: "uint256",
-        name: "amountToBorrow",
-        type: "uint256"
-      }
-    ],
-    name: "batchValidate",
-    outputs: [
-      {
-        components: [
-          {
-            internalType: "uint256",
-            name: "buyFeeBps",
-            type: "uint256"
-          },
-          {
-            internalType: "uint256",
-            name: "sellFeeBps",
-            type: "uint256"
-          }
-        ],
-        internalType: "struct TokenFees[]",
-        name: "fotResults",
-        type: "tuple[]"
-      }
-    ],
-    stateMutability: "nonpayable",
-    type: "function"
-  },
-  {
-    inputs: [
-      {
-        internalType: "address",
-        name: "",
-        type: "address"
-      },
-      {
-        internalType: "uint256",
-        name: "amount0",
-        type: "uint256"
-      },
-      {
-        internalType: "uint256",
-        name: "",
-        type: "uint256"
-      },
-      {
-        internalType: "bytes",
-        name: "data",
-        type: "bytes"
-      }
-    ],
-    name: "pancakeCall",
-    outputs: [],
-    stateMutability: "nonpayable",
-    type: "function"
-  },
-  {
-    inputs: [
-      {
-        internalType: "address",
-        name: "token",
-        type: "address"
-      },
-      {
-        internalType: "address",
-        name: "baseToken",
-        type: "address"
-      },
-      {
-        internalType: "uint256",
-        name: "amountToBorrow",
-        type: "uint256"
-      }
-    ],
-    name: "validate",
-    outputs: [
-      {
-        components: [
-          {
-            internalType: "uint256",
-            name: "buyFeeBps",
-            type: "uint256"
-          },
-          {
-            internalType: "uint256",
-            name: "sellFeeBps",
-            type: "uint256"
-          }
-        ],
-        internalType: "struct TokenFees",
-        name: "fotResult",
-        type: "tuple"
-      }
-    ],
-    stateMutability: "nonpayable",
-    type: "function"
+// evm/constants/stableSwap/pools.ts
+var isStableSwapSupported = (chainId) => {
+  if (!chainId) {
+    return false;
   }
-];
-var feeOnTransferDetectorAddresses = {
-  [ChainId.ETHEREUM]: "0xe9200516a475b9e6FD4D1c452858097F345A6760",
-  [ChainId.SEPOLIA]: "0xD8b14F915b1b4b1c4EE4bF8321Bea018E72E5cf3",
-  [ChainId.BSC]: "0x003BD52f589F23346E03fA431209C29cD599d693",
-  [ChainId.BSC_TESTNET]: "0xE83BD854c1fBf54424b4d914163BF855aB1131Aa",
-  [ChainId.ARBITRUM_ONE]: "0xD8b14F915b1b4b1c4EE4bF8321Bea018E72E5cf3",
-  [ChainId.ARBITRUM_SEPOLIA]: "0xD8b14F915b1b4b1c4EE4bF8321Bea018E72E5cf3",
-  [ChainId.POLYGON_ZKEVM]: "0xe9200516a475b9e6FD4D1c452858097F345A6760",
-  [ChainId.POLYGON_ZKEVM_TESTNET]: "0xbc60A0d9536B6F75b1FfE18b47364ED684EA0260",
-  [ChainId.BASE]: "0xD8b14F915b1b4b1c4EE4bF8321Bea018E72E5cf3",
-  [ChainId.BASE_SEPOLIA]: "0xD8b14F915b1b4b1c4EE4bF8321Bea018E72E5cf3",
-  [ChainId.ZKSYNC]: "0xED87D01674199355CEfC05648d17E037306d7962",
-  [ChainId.ZKSYNC_TESTNET]: "0x869505373d830104130F95c1E7d578dE7E58C0a8",
-  [ChainId.LINEA]: "0xD8b14F915b1b4b1c4EE4bF8321Bea018E72E5cf3",
-  [ChainId.LINEA_TESTNET]: "0x3412378f17B1b44E8bcFD157EcE1a4f59DA5A77a",
-  [17e3]: "0x"
+  return STABLE_SUPPORTED_CHAIN_IDS.includes(chainId);
 };
-var getFeeOnTransferDetectorContract = (publicClient) => {
-  if (publicClient.chain && publicClient.chain.id in feeOnTransferDetectorAddresses) {
-    return getContract({
-      abi: feeOnTransferDetectorAbi,
-      address: feeOnTransferDetectorAddresses[publicClient.chain.id],
-      client: publicClient
-    });
-  }
-  return null;
+var STABLE_SUPPORTED_CHAIN_IDS = [17e3 /* HOLESKY */];
+var STABLE_POOL_MAP = {
+  [17e3 /* HOLESKY */]: []
 };
-var AMOUNT = 100000n;
-async function fetchTokenFeeOnTransfer(publicClient, tokenAddress) {
-  if (!publicClient.chain) {
-    throw new Error("Chain not found");
+
+// evm/constants/stableSwap/index.ts
+function getStableSwapPools(chainId) {
+  if (!isStableSwapSupported(chainId)) {
+    return [];
   }
-  const contract = getFeeOnTransferDetectorContract(publicClient);
-  const baseToken = WNATIVE[publicClient.chain.id];
-  if (!contract) {
-    throw new Error("Fee on transfer detector contract not found");
-  }
-  if (!baseToken) {
-    throw new Error("Base token not found");
-  }
-  if (tokenAddress.toLowerCase() === baseToken.address.toLowerCase()) {
-    throw new Error("Token is base token");
-  }
-  return contract.simulate.validate([tokenAddress, baseToken.address, AMOUNT]);
+  return STABLE_POOL_MAP[chainId] || [];
 }
-async function fetchTokenFeeOnTransferBatch(publicClient, tokens) {
-  if (!publicClient.chain) {
-    throw new Error("Chain not found");
+
+// evm/stableSwap/index.ts
+var stableSwap_exports = {};
+__export(stableSwap_exports, {
+  getD: () => getD,
+  getLPOutput: () => getLPOutput,
+  getLPOutputWithoutFee: () => getLPOutputWithoutFee,
+  getSwapInput: () => getSwapInput,
+  getSwapInputWithtouFee: () => getSwapInputWithtouFee,
+  getSwapOutput: () => getSwapOutput,
+  getSwapOutputWithoutFee: () => getSwapOutputWithoutFee
+});
+function getD({ amplifier, balances }) {
+  const numOfCoins = balances.length;
+  invariant5(numOfCoins > 1, "To get constant D, pool should have at least two coins.");
+  const sum2 = balances.reduce((s, cur) => s + BigInt(cur), ZERO);
+  if (sum2 === ZERO) {
+    return ZERO;
   }
-  const contract = getFeeOnTransferDetectorContract(publicClient);
-  if (!contract) {
-    throw new Error("Fee on transfer detector contract not found");
+  const n = BigInt(numOfCoins);
+  const precision = ONE;
+  const ann = BigInt(amplifier) * n;
+  let dPrev = ZERO;
+  let d = sum2;
+  for (let i = 0; i < 255; i += 1) {
+    let dp = d;
+    for (const b of balances) {
+      dp = dp * d / (BigInt(b) * n + BigInt(1));
+    }
+    dPrev = d;
+    d = (ann * sum2 + dp * n) * d / ((ann - ONE) * d + (n + ONE) * dp);
+    if (d > dPrev && d - dPrev <= precision) {
+      break;
+    }
+    if (d <= dPrev && dPrev - d <= precision) {
+      break;
+    }
   }
-  const baseToken = WNATIVE[publicClient.chain.id];
-  if (!baseToken) {
-    throw new Error("Base token not found");
+  return d;
+}
+function getY({ amplifier, balances, i, j, x }) {
+  const numOfCoins = balances.length;
+  invariant5(numOfCoins > 1, "To get y, pool should have at least two coins.");
+  invariant5(i !== j && i >= 0 && j >= 0 && i < numOfCoins && j < numOfCoins, `Invalid i: ${i} and j: ${j}`);
+  const n = BigInt(numOfCoins);
+  const d = getD({ amplifier, balances });
+  let sum2 = ZERO;
+  let c = d;
+  const ann = BigInt(amplifier) * n;
+  for (const [index, b2] of balances.entries()) {
+    if (index === j) {
+      continue;
+    }
+    let balanceAfterDeposit = BigInt(b2);
+    if (index === i) {
+      balanceAfterDeposit += BigInt(x);
+    }
+    invariant5(balanceAfterDeposit > ZERO, "Insufficient liquidity");
+    sum2 += balanceAfterDeposit;
+    c = c * d / (balanceAfterDeposit * n);
   }
-  const tokensWithoutBaseToken = tokens.filter(
-    (token) => token.address.toLowerCase() !== baseToken.address.toLowerCase()
+  c = c * d / (ann * n);
+  const b = sum2 + d / ann;
+  const precision = ONE;
+  let yPrev = ZERO;
+  let y = d;
+  for (let k = 0; k < 255; k += 1) {
+    yPrev = y;
+    y = (y * y + c) / (BigInt(2) * y + b - d);
+    if (y > yPrev && y - yPrev <= precision) {
+      break;
+    }
+    if (y <= yPrev && yPrev - y <= precision) {
+      break;
+    }
+  }
+  return y;
+}
+var PRECISION = BigInt(10) ** BigInt(18);
+var getRawAmount = (amount) => {
+  return amount.quotient * PRECISION / BigInt(10) ** BigInt(amount.currency.decimals);
+};
+var parseAmount = (currency, rawAmount) => {
+  return CurrencyAmount.fromRawAmount(currency, rawAmount * BigInt(10) ** BigInt(currency.decimals) / PRECISION);
+};
+
+// evm/stableSwap/getLPOutput.ts
+function getLPOutput({
+  amplifier,
+  balances,
+  totalSupply,
+  amounts,
+  fee
+}) {
+  const lpToken = totalSupply.currency;
+  const lpTotalSupply = totalSupply.quotient;
+  if (lpTotalSupply === ZERO || !balances.length || balances.every((b) => b.quotient === ZERO)) {
+    const d = getD({ amplifier, balances: amounts.map(getRawAmount) });
+    return CurrencyAmount.fromRawAmount(lpToken, d);
+  }
+  const currentBalances = [];
+  const newBalances = [];
+  for (const [i, balance] of balances.entries()) {
+    const amount = amounts[i] || CurrencyAmount.fromRawAmount(balance.currency, 0);
+    invariant5(
+      amount.currency.wrapped.equals(balance.currency.wrapped),
+      "User input currency should be the same as pool balance currency."
+    );
+    const balanceRaw = getRawAmount(balance);
+    const amountRaw = getRawAmount(amount);
+    currentBalances.push(balanceRaw);
+    newBalances.push(balanceRaw + amountRaw);
+  }
+  const d0 = getD({ amplifier, balances: currentBalances });
+  const d1 = getD({ amplifier, balances: newBalances });
+  invariant5(d1 >= d0, "D1 should be greater than or equal than d0.");
+  const isFirstSupply = lpTotalSupply <= ZERO;
+  if (isFirstSupply) {
+    return CurrencyAmount.fromRawAmount(totalSupply.currency, d1);
+  }
+  const n = currentBalances.length;
+  const eachTokenFee = fee.multiply(n).divide(4 * (n - 1));
+  let d2 = d1;
+  for (const [i, b] of currentBalances.entries()) {
+    const idealBalance = d1 * b / d0;
+    let diff = ZERO;
+    if (idealBalance > newBalances[i]) {
+      diff = idealBalance - newBalances[i];
+    } else {
+      diff = newBalances[i] - idealBalance;
+    }
+    const feeAmount = eachTokenFee.multiply(diff).quotient;
+    newBalances[i] = newBalances[i] - feeAmount;
+  }
+  d2 = getD({ amplifier, balances: newBalances });
+  const expectedMintLP = lpTotalSupply * (d2 - d0) / d0;
+  return CurrencyAmount.fromRawAmount(totalSupply.currency, expectedMintLP);
+}
+
+// evm/stableSwap/getLPOutputWithoutFee.ts
+function getLPOutputWithoutFee(params) {
+  return getLPOutput({ ...params, fee: new Percent(0) });
+}
+function getSwapOutput({
+  amplifier,
+  balances: balanceAmounts,
+  outputCurrency,
+  amount,
+  fee
+}) {
+  const validateAmountOut = (a) => invariant5(!a.lessThan(ZERO), "Insufficient liquidity to perform the swap");
+  let i = null;
+  let j = null;
+  const balances = [];
+  for (const [index, b] of balanceAmounts.entries()) {
+    balances.push(getRawAmount(b));
+    if (b.currency.wrapped.equals(amount.currency.wrapped)) {
+      i = index;
+      continue;
+    }
+    if (b.currency.wrapped.equals(outputCurrency.wrapped)) {
+      j = index;
+      continue;
+    }
+  }
+  invariant5(
+    i !== null && j !== null && i !== j,
+    "Input currency or output currency does not match currencies of token balances."
   );
-  return publicClient.multicall({
-    allowFailure: true,
-    contracts: tokensWithoutBaseToken.map(
-      (token) => ({
-        address: contract.address,
-        abi: feeOnTransferDetectorAbi,
-        functionName: "validate",
-        args: [token.address, baseToken.address, AMOUNT]
-      })
-    )
+  if (amount.quotient < ZERO) {
+    const x = ONE_HUNDRED_PERCENT.subtract(fee).invert().multiply(getRawAmount(amount)).quotient;
+    const y2 = getY({ amplifier, balances, i, j, x });
+    const dy2 = y2 - balances[j];
+    const amountOut2 = parseAmount(outputCurrency, dy2);
+    validateAmountOut(amountOut2);
+    return amountOut2;
+  }
+  const y = getY({ amplifier, balances, i, j, x: getRawAmount(amount) });
+  const dy = balances[j] - y;
+  const feeAmount = fee.multiply(dy).quotient;
+  const amountOut = parseAmount(outputCurrency, dy - feeAmount);
+  validateAmountOut(amountOut);
+  return amountOut;
+}
+function getSwapOutputWithoutFee(params) {
+  return getSwapOutput({ ...params, fee: new Percent(0) });
+}
+function getSwapInput({ amount, ...rest }) {
+  return getSwapOutput({
+    ...rest,
+    amount: CurrencyAmount.fromRawAmount(amount.currency, -amount.quotient)
   });
+}
+function getSwapInputWithtouFee(params) {
+  return getSwapInput({ ...params, fee: new Percent(0) });
 }
 
 // evm/v3-router/smartRouter.ts
@@ -666,7 +398,6 @@ __export(smartRouter_exports, {
   APISchema: () => schema_exports,
   PancakeMulticallProvider: () => PancakeMulticallProvider,
   Transformer: () => transformer_exports,
-  buildBaseRoute: () => buildBaseRoute,
   createCommonTokenPriceProvider: () => createCommonTokenPriceProvider,
   createGetV2CandidatePools: () => createGetV2CandidatePools,
   createGetV3CandidatePools: () => createGetV3CandidatePools,
@@ -674,11 +405,9 @@ __export(smartRouter_exports, {
   createHybridPoolProvider: () => createHybridPoolProvider,
   createOffChainQuoteProvider: () => createOffChainQuoteProvider,
   createPoolProvider: () => createPoolProvider,
-  createPoolQuoteGetter: () => createPoolQuoteGetter,
   createQuoteProvider: () => createQuoteProvider,
   createStaticPoolProvider: () => createStaticPoolProvider,
   createV2PoolsProviderByCommonTokenPrices: () => createV2PoolsProviderByCommonTokenPrices,
-  encodeMixedRouteToPath: () => encodeMixedRouteToPath,
   getAllV3PoolsFromSubgraph: () => getAllV3PoolsFromSubgraph,
   getBestTrade: () => getBestTrade,
   getCandidatePools: () => getCandidatePools,
@@ -689,10 +418,8 @@ __export(smartRouter_exports, {
   getCommonTokenPricesByWalletApi: () => getCommonTokenPricesByWalletApi,
   getExecutionPrice: () => getExecutionPrice,
   getMidPrice: () => getMidPrice,
-  getOutputOfPools: () => getOutputOfPools,
   getPairCombinations: () => getPairCombinations,
   getPoolAddress: () => getPoolAddress,
-  getPriceImpact: () => getPriceImpact,
   getStableCandidatePools: () => getStableCandidatePools,
   getStablePoolsOnChain: () => getStablePoolsOnChain,
   getTokenUsdPricesBySubgraph: () => getTokenUsdPricesBySubgraph,
@@ -715,12 +442,15 @@ __export(smartRouter_exports, {
   maximumAmountIn: () => maximumAmountIn,
   metric: () => metric,
   minimumAmountOut: () => minimumAmountOut,
-  partitionMixedRouteByProtocol: () => partitionMixedRouteByProtocol,
+  publicClient: () => publicClient,
+  quoteProvider: () => quoteProvider,
   v2PoolSubgraphSelection: () => v2PoolTvlSelector,
   v2PoolTvlSelector: () => v2PoolTvlSelector,
+  v2SubgraphClient: () => v2SubgraphClient,
   v3PoolSubgraphSelection: () => v3PoolTvlSelector,
   v3PoolTvlSelector: () => v3PoolTvlSelector,
-  v3PoolsOnChainProviderFactory: () => v3PoolsOnChainProviderFactory
+  v3PoolsOnChainProviderFactory: () => v3PoolsOnChainProviderFactory,
+  v3SubgraphClient: () => v3SubgraphClient
 });
 function getAmountDistribution(amount, distributionPercent) {
   const percents = [];
@@ -732,26 +462,8 @@ function getAmountDistribution(amount, distributionPercent) {
   return [percents, amounts];
 }
 function wrappedCurrency(currency, chainId) {
-  return currency?.isNative ? WNATIVE[chainId] : currency?.isToken ? currency : void 0;
+  return currency?.isNative ? holeskyTokens.weth : currency?.isToken ? currency : void 0;
 }
-
-// evm/v3-router/types/pool.ts
-var PoolType = /* @__PURE__ */ ((PoolType2) => {
-  PoolType2[PoolType2["V2"] = 0] = "V2";
-  PoolType2[PoolType2["V3"] = 1] = "V3";
-  PoolType2[PoolType2["STABLE"] = 2] = "STABLE";
-  return PoolType2;
-})(PoolType || {});
-
-// evm/v3-router/types/route.ts
-var RouteType = /* @__PURE__ */ ((RouteType2) => {
-  RouteType2[RouteType2["V2"] = 0] = "V2";
-  RouteType2[RouteType2["V3"] = 1] = "V3";
-  RouteType2[RouteType2["STABLE"] = 2] = "STABLE";
-  RouteType2[RouteType2["MIXED"] = 3] = "MIXED";
-  RouteType2[RouteType2["MM"] = 4] = "MM";
-  return RouteType2;
-})(RouteType || {});
 function parseUnits(value, decimals) {
   let [integer, fraction = "0"] = value.split(".");
   const negative = integer.startsWith("-");
@@ -799,7 +511,35 @@ function tryParseAmount(value, currency) {
 }
 var tryParseAmount_default = tryParseAmount;
 
+// evm/v3-router/types/pool.ts
+var PoolType = /* @__PURE__ */ ((PoolType2) => {
+  PoolType2[PoolType2["V2"] = 0] = "V2";
+  PoolType2[PoolType2["V3"] = 1] = "V3";
+  PoolType2[PoolType2["STABLE"] = 2] = "STABLE";
+  return PoolType2;
+})(PoolType || {});
+
+// evm/v3-router/types/route.ts
+var RouteType = /* @__PURE__ */ ((RouteType2) => {
+  RouteType2[RouteType2["V2"] = 0] = "V2";
+  RouteType2[RouteType2["V3"] = 1] = "V3";
+  RouteType2[RouteType2["STABLE"] = 2] = "STABLE";
+  RouteType2[RouteType2["MIXED"] = 3] = "MIXED";
+  RouteType2[RouteType2["MM"] = 4] = "MM";
+  return RouteType2;
+})(RouteType || {});
+
 // evm/v3-router/utils/pool.ts
+function computePairAddress(token0, token1) {
+  const salt = keccak256(
+    encodePacked(["address", "address", "bool"], [token0.address, token1.address, false])
+  );
+  return getCreate2Address({
+    from: "0x8C6f64642bc9433D57C505A448248f445F7DDee7",
+    salt,
+    bytecodeHash: "0x664a0deaa7261823d82ee0c235235765b5e53199c871313fbdcdda2667878924"
+  });
+}
 function isV2Pool(pool) {
   return pool.type === 0 /* V2 */;
 }
@@ -841,15 +581,15 @@ function getOutputCurrency(pool, currencyIn) {
   }
   throw new Error("Cannot get output currency by invalid pool");
 }
-var computeV3PoolAddress = memoize2(
+var computeV3PoolAddress = memoize(
   computePoolAddress,
-  ({ deployerAddress, tokenA, tokenB, fee }) => `${tokenA.chainId}_${deployerAddress}_${tokenA.address}_${tokenB.address}_${fee}`
+  ({ poolDeployer, tokenA, tokenB, initCodeHashManualOverride }) => `${tokenA.chainId}_${poolDeployer}_${tokenA.address}_${initCodeHashManualOverride}_${tokenB.address}`
 );
-var computeV2PoolAddress = memoize2(
-  Pair.getAddress,
+var computeV2PoolAddress = memoize(
+  computePairAddress,
   (tokenA, tokenB) => `${tokenA.chainId}_${tokenA.address}_${tokenB.address}`
 );
-var getPoolAddress = memoize2(
+var getPoolAddress = memoize(
   function getAddress(pool) {
     if (isStablePool(pool) || isV3Pool(pool)) {
       return pool.address;
@@ -867,8 +607,7 @@ var getPoolAddress = memoize2(
       return `${pool.type}_${balances[0]?.currency.chainId}_${tokenAddresses.join("_")}`;
     }
     const [token0, token1] = isV2Pool(pool) ? [pool.reserve0.currency.wrapped, pool.reserve1.currency.wrapped] : [pool.token0.wrapped, pool.token1.wrapped];
-    const fee = isV3Pool(pool) ? pool.fee : "V2_FEE";
-    return `${pool.type}_${token0.chainId}_${token0.address}_${token1.address}_${fee}`;
+    return `${pool.type}_${token0.chainId}_${token0.address}_${token1.address}`;
   }
 );
 function getTokenPrice(pool, base, quote) {
@@ -899,7 +638,7 @@ function getTokenPrice(pool, base, quote) {
       quoteAmount: quoteOut
     });
   }
-  return new Price(base, quote, 1n, 0n);
+  return new Price(base, quote, BigInt(1), BigInt(0));
 }
 
 // evm/v3-router/utils/encodeMixedRouteToPath.ts
@@ -912,14 +651,14 @@ function encodeMixedRouteToPath(route, exactOutput) {
       if (index === 0) {
         return {
           inputToken: outputToken,
-          types: ["address", "uint24", "address"],
-          path: [inputToken.address, fee, outputToken.address]
+          types: isV3Pool(pool) ? ["address", "address"] : ["address", "uint24", "address"],
+          path: isV3Pool(pool) ? [inputToken.address, outputToken.address] : [inputToken.address, fee, outputToken.address]
         };
       }
       return {
         inputToken: outputToken,
-        types: [...types2, "uint24", "address"],
-        path: [...path2, fee, outputToken.address]
+        types: isV3Pool(pool) ? [...types2, "address"] : [...types2, "uint24", "address"],
+        path: isV3Pool(pool) ? [...path2, outputToken.address] : [...path2, fee, outputToken.address]
       };
     },
     { inputToken: firstInputToken, path: [], types: [] }
@@ -928,33 +667,72 @@ function encodeMixedRouteToPath(route, exactOutput) {
 }
 function getExecutionPrice(trade) {
   if (!trade) {
-    return void 0;
+    return null;
   }
   const { inputAmount, outputAmount } = trade;
   if (inputAmount.quotient === ZERO || outputAmount.quotient === ZERO) {
-    return void 0;
+    return null;
   }
   return new Price(inputAmount.currency, outputAmount.currency, inputAmount.quotient, outputAmount.quotient);
 }
+
+// evm/v3-router/utils/getNativeWrappedToken.ts
 function getNativeWrappedToken(chainId) {
-  return WNATIVE[chainId] ?? null;
+  return holeskyTokens.weth ?? null;
 }
 
-// evm/v3-router/utils/getOutputOfPools.ts
-var getOutputOfPools = (pools, firstInputToken) => {
-  const { inputToken: outputToken } = pools.reduce(
-    ({ inputToken }, pool) => {
-      if (!involvesCurrency(pool, inputToken))
-        throw new Error("PATH");
-      const output = getOutputCurrency(pool, inputToken);
-      return {
-        inputToken: output
-      };
-    },
-    { inputToken: firstInputToken }
-  );
-  return outputToken;
+// evm/v3-router/utils/getUsdGasToken.ts
+function getUsdGasToken(chainId) {
+  return usdGasTokensByChain[chainId]?.[0] ?? null;
+}
+
+// evm/v3-router/utils/isCurrenciesSameChain.ts
+function isCurrenciesSameChain(...currencies) {
+  const chainId = currencies[0]?.chainId;
+  for (const currency of currencies) {
+    if (currency.chainId !== chainId) {
+      return false;
+    }
+  }
+  return true;
+}
+var SCOPE_PREFIX = "smart-router";
+var SCOPE = {
+  metric: "metric",
+  log: "log",
+  error: "error"
 };
+var log_ = debug(SCOPE_PREFIX);
+var metric = log_.extend(SCOPE.metric);
+var log = log_.extend(SCOPE.log);
+var logger = {
+  metric,
+  log,
+  error: debug(SCOPE_PREFIX).extend(SCOPE.error),
+  enable: (namespace) => {
+    let namespaces = namespace;
+    if (namespace.includes(",")) {
+      namespaces = namespace.split(",").map((ns) => `${SCOPE_PREFIX}:${ns}`).join(",");
+    } else {
+      namespaces = `${SCOPE_PREFIX}:${namespace}`;
+    }
+    debug.enable(namespaces);
+  }
+};
+function maximumAmountIn(trade, slippage, amountIn = trade.inputAmount) {
+  if (trade.tradeType === TradeType.EXACT_INPUT) {
+    return amountIn;
+  }
+  const slippageAdjustedAmountIn = new Fraction(ONE).add(slippage).multiply(amountIn.quotient).quotient;
+  return CurrencyAmount.fromRawAmount(amountIn.currency, slippageAdjustedAmountIn);
+}
+function minimumAmountOut(trade, slippage, amountOut = trade.outputAmount) {
+  if (trade.tradeType === TradeType.EXACT_OUTPUT) {
+    return amountOut;
+  }
+  const slippageAdjustedAmountOut = new Fraction(ONE).add(slippage).invert().multiply(amountOut.quotient).quotient;
+  return CurrencyAmount.fromRawAmount(amountOut.currency, slippageAdjustedAmountOut);
+}
 
 // evm/v3-router/utils/route.ts
 function buildBaseRoute(pools, currencyIn, currencyOut) {
@@ -1017,2577 +795,6 @@ function getMidPrice({ path, pools }) {
   return price;
 }
 
-// evm/v3-router/utils/getPriceImpact.ts
-function getPriceImpact(trade) {
-  let spotOutputAmount = CurrencyAmount.fromRawAmount(trade.outputAmount.currency.wrapped, 0);
-  for (const route of trade.routes) {
-    const { inputAmount } = route;
-    const midPrice = getMidPrice(route);
-    spotOutputAmount = spotOutputAmount.add(midPrice.quote(inputAmount.wrapped));
-  }
-  const priceImpact = spotOutputAmount.subtract(trade.outputAmount.wrapped).divide(spotOutputAmount);
-  return new Percent(priceImpact.numerator, priceImpact.denominator);
-}
-
-// evm/v3-router/utils/getUsdGasToken.ts
-function getUsdGasToken(chainId) {
-  return usdGasTokensByChain[chainId]?.[0] ?? null;
-}
-
-// evm/v3-router/utils/isCurrenciesSameChain.ts
-function isCurrenciesSameChain(...currencies) {
-  const chainId = currencies[0]?.chainId;
-  for (const currency of currencies) {
-    if (currency.chainId !== chainId) {
-      return false;
-    }
-  }
-  return true;
-}
-var SCOPE_PREFIX = "smart-router";
-var SCOPE = {
-  metric: "metric",
-  log: "log",
-  error: "error"
-};
-var log_ = debug(SCOPE_PREFIX);
-var metric = log_.extend(SCOPE.metric);
-var log = log_.extend(SCOPE.log);
-var logger = {
-  metric,
-  log,
-  error: debug(SCOPE_PREFIX).extend(SCOPE.error),
-  enable: (namespace) => {
-    let namespaces = namespace;
-    if (namespace.includes(",")) {
-      namespaces = namespace.split(",").map((ns) => `${SCOPE_PREFIX}:${ns}`).join(",");
-    } else {
-      namespaces = `${SCOPE_PREFIX}:${namespace}`;
-    }
-    debug.enable(namespaces);
-  }
-};
-function maximumAmountIn(trade, slippage, amountIn = trade.inputAmount) {
-  if (trade.tradeType === TradeType.EXACT_INPUT) {
-    return amountIn;
-  }
-  const slippageAdjustedAmountIn = new Fraction(ONE).add(slippage).multiply(amountIn.quotient).quotient;
-  return CurrencyAmount.fromRawAmount(amountIn.currency, slippageAdjustedAmountIn);
-}
-function minimumAmountOut(trade, slippage, amountOut = trade.outputAmount) {
-  if (trade.tradeType === TradeType.EXACT_OUTPUT) {
-    return amountOut;
-  }
-  const slippageAdjustedAmountOut = new Fraction(ONE).add(slippage).invert().multiply(amountOut.quotient).quotient;
-  return CurrencyAmount.fromRawAmount(amountOut.currency, slippageAdjustedAmountOut);
-}
-
-// evm/v3-router/utils/partitionMixedRouteByProtocol.ts
-var partitionMixedRouteByProtocol = (route) => {
-  const acc = [];
-  let left = 0;
-  let right = 0;
-  while (right < route.pools.length) {
-    if (route.pools[left].type !== route.pools[right].type) {
-      acc.push(route.pools.slice(left, right));
-      left = right;
-    }
-    right++;
-    if (right === route.pools.length) {
-      acc.push(route.pools.slice(left, right));
-    }
-  }
-  return acc;
-};
-
-// evm/abis/ISwapRouter02.ts
-var swapRouter02Abi = [
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "_factoryV2",
-        "type": "address"
-      },
-      {
-        "internalType": "address",
-        "name": "poolDeployer",
-        "type": "address"
-      },
-      {
-        "internalType": "address",
-        "name": "factoryV3",
-        "type": "address"
-      },
-      {
-        "internalType": "address",
-        "name": "_positionManager",
-        "type": "address"
-      },
-      {
-        "internalType": "address",
-        "name": "_WNativeToken",
-        "type": "address"
-      }
-    ],
-    "stateMutability": "nonpayable",
-    "type": "constructor"
-  },
-  {
-    "inputs": [],
-    "name": "WNativeToken",
-    "outputs": [
-      {
-        "internalType": "address",
-        "name": "",
-        "type": "address"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "int256",
-        "name": "amount0Delta",
-        "type": "int256"
-      },
-      {
-        "internalType": "int256",
-        "name": "amount1Delta",
-        "type": "int256"
-      },
-      {
-        "internalType": "bytes",
-        "name": "_data",
-        "type": "bytes"
-      }
-    ],
-    "name": "algebraSwapCallback",
-    "outputs": [],
-    "stateMutability": "nonpayable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "token",
-        "type": "address"
-      }
-    ],
-    "name": "approveMax",
-    "outputs": [],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "token",
-        "type": "address"
-      }
-    ],
-    "name": "approveMaxMinusOne",
-    "outputs": [],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "token",
-        "type": "address"
-      }
-    ],
-    "name": "approveZeroThenMax",
-    "outputs": [],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "token",
-        "type": "address"
-      }
-    ],
-    "name": "approveZeroThenMaxMinusOne",
-    "outputs": [],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "bytes",
-        "name": "data",
-        "type": "bytes"
-      }
-    ],
-    "name": "callPositionManager",
-    "outputs": [
-      {
-        "internalType": "bytes",
-        "name": "result",
-        "type": "bytes"
-      }
-    ],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "bytes[]",
-        "name": "paths",
-        "type": "bytes[]"
-      },
-      {
-        "internalType": "uint128[]",
-        "name": "amounts",
-        "type": "uint128[]"
-      },
-      {
-        "internalType": "uint24",
-        "name": "maximumTickDivergence",
-        "type": "uint24"
-      },
-      {
-        "internalType": "uint32",
-        "name": "secondsAgo",
-        "type": "uint32"
-      }
-    ],
-    "name": "checkOracleSlippage",
-    "outputs": [],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "bytes",
-        "name": "path",
-        "type": "bytes"
-      },
-      {
-        "internalType": "uint24",
-        "name": "maximumTickDivergence",
-        "type": "uint24"
-      },
-      {
-        "internalType": "uint32",
-        "name": "secondsAgo",
-        "type": "uint32"
-      }
-    ],
-    "name": "checkOracleSlippage",
-    "outputs": [],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "components": [
-          {
-            "internalType": "bytes",
-            "name": "path",
-            "type": "bytes"
-          },
-          {
-            "internalType": "address",
-            "name": "recipient",
-            "type": "address"
-          },
-          {
-            "internalType": "uint256",
-            "name": "amountIn",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "amountOutMinimum",
-            "type": "uint256"
-          }
-        ],
-        "internalType": "struct IV3SwapRouter.ExactInputParams",
-        "name": "params",
-        "type": "tuple"
-      }
-    ],
-    "name": "exactInput",
-    "outputs": [
-      {
-        "internalType": "uint256",
-        "name": "amountOut",
-        "type": "uint256"
-      }
-    ],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "components": [
-          {
-            "internalType": "address",
-            "name": "tokenIn",
-            "type": "address"
-          },
-          {
-            "internalType": "address",
-            "name": "tokenOut",
-            "type": "address"
-          },
-          {
-            "internalType": "address",
-            "name": "recipient",
-            "type": "address"
-          },
-          {
-            "internalType": "uint256",
-            "name": "amountIn",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "amountOutMinimum",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint160",
-            "name": "limitSqrtPrice",
-            "type": "uint160"
-          }
-        ],
-        "internalType": "struct IV3SwapRouter.ExactInputSingleParams",
-        "name": "params",
-        "type": "tuple"
-      }
-    ],
-    "name": "exactInputSingle",
-    "outputs": [
-      {
-        "internalType": "uint256",
-        "name": "amountOut",
-        "type": "uint256"
-      }
-    ],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "components": [
-          {
-            "internalType": "address",
-            "name": "tokenIn",
-            "type": "address"
-          },
-          {
-            "internalType": "address",
-            "name": "tokenOut",
-            "type": "address"
-          },
-          {
-            "internalType": "address",
-            "name": "recipient",
-            "type": "address"
-          },
-          {
-            "internalType": "uint256",
-            "name": "amountIn",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "amountOutMinimum",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint160",
-            "name": "limitSqrtPrice",
-            "type": "uint160"
-          }
-        ],
-        "internalType": "struct IV3SwapRouter.ExactInputSingleParams",
-        "name": "params",
-        "type": "tuple"
-      }
-    ],
-    "name": "exactInputSingleSupportingFeeOnTransferTokens",
-    "outputs": [
-      {
-        "internalType": "uint256",
-        "name": "amountOut",
-        "type": "uint256"
-      }
-    ],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "components": [
-          {
-            "internalType": "bytes",
-            "name": "path",
-            "type": "bytes"
-          },
-          {
-            "internalType": "address",
-            "name": "recipient",
-            "type": "address"
-          },
-          {
-            "internalType": "uint256",
-            "name": "amountOut",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "amountInMaximum",
-            "type": "uint256"
-          }
-        ],
-        "internalType": "struct IV3SwapRouter.ExactOutputParams",
-        "name": "params",
-        "type": "tuple"
-      }
-    ],
-    "name": "exactOutput",
-    "outputs": [
-      {
-        "internalType": "uint256",
-        "name": "amountIn",
-        "type": "uint256"
-      }
-    ],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "components": [
-          {
-            "internalType": "address",
-            "name": "tokenIn",
-            "type": "address"
-          },
-          {
-            "internalType": "address",
-            "name": "tokenOut",
-            "type": "address"
-          },
-          {
-            "internalType": "address",
-            "name": "recipient",
-            "type": "address"
-          },
-          {
-            "internalType": "uint256",
-            "name": "amountOut",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "amountInMaximum",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint160",
-            "name": "limitSqrtPrice",
-            "type": "uint160"
-          }
-        ],
-        "internalType": "struct IV3SwapRouter.ExactOutputSingleParams",
-        "name": "params",
-        "type": "tuple"
-      }
-    ],
-    "name": "exactOutputSingle",
-    "outputs": [
-      {
-        "internalType": "uint256",
-        "name": "amountIn",
-        "type": "uint256"
-      }
-    ],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [],
-    "name": "factory",
-    "outputs": [
-      {
-        "internalType": "address",
-        "name": "",
-        "type": "address"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [],
-    "name": "factoryV2",
-    "outputs": [
-      {
-        "internalType": "address",
-        "name": "",
-        "type": "address"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "amountIn",
-        "type": "uint256"
-      },
-      {
-        "internalType": "address[]",
-        "name": "path",
-        "type": "address[]"
-      }
-    ],
-    "name": "getAmountsOut",
-    "outputs": [
-      {
-        "internalType": "uint256[]",
-        "name": "amounts",
-        "type": "uint256[]"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "token",
-        "type": "address"
-      },
-      {
-        "internalType": "uint256",
-        "name": "amount",
-        "type": "uint256"
-      }
-    ],
-    "name": "getApprovalType",
-    "outputs": [
-      {
-        "internalType": "enum IApproveAndCall.ApprovalType",
-        "name": "",
-        "type": "uint8"
-      }
-    ],
-    "stateMutability": "nonpayable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "components": [
-          {
-            "internalType": "address",
-            "name": "token0",
-            "type": "address"
-          },
-          {
-            "internalType": "address",
-            "name": "token1",
-            "type": "address"
-          },
-          {
-            "internalType": "uint256",
-            "name": "tokenId",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "amount0Min",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "amount1Min",
-            "type": "uint256"
-          }
-        ],
-        "internalType": "struct IApproveAndCall.IncreaseLiquidityParams",
-        "name": "params",
-        "type": "tuple"
-      }
-    ],
-    "name": "increaseLiquidity",
-    "outputs": [
-      {
-        "internalType": "bytes",
-        "name": "result",
-        "type": "bytes"
-      }
-    ],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "components": [
-          {
-            "internalType": "address",
-            "name": "token0",
-            "type": "address"
-          },
-          {
-            "internalType": "address",
-            "name": "token1",
-            "type": "address"
-          },
-          {
-            "internalType": "uint24",
-            "name": "fee",
-            "type": "uint24"
-          },
-          {
-            "internalType": "int24",
-            "name": "tickLower",
-            "type": "int24"
-          },
-          {
-            "internalType": "int24",
-            "name": "tickUpper",
-            "type": "int24"
-          },
-          {
-            "internalType": "uint256",
-            "name": "amount0Min",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "amount1Min",
-            "type": "uint256"
-          },
-          {
-            "internalType": "address",
-            "name": "recipient",
-            "type": "address"
-          }
-        ],
-        "internalType": "struct IApproveAndCall.MintParams",
-        "name": "params",
-        "type": "tuple"
-      }
-    ],
-    "name": "mint",
-    "outputs": [
-      {
-        "internalType": "bytes",
-        "name": "result",
-        "type": "bytes"
-      }
-    ],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "bytes32",
-        "name": "previousBlockhash",
-        "type": "bytes32"
-      },
-      {
-        "internalType": "bytes[]",
-        "name": "data",
-        "type": "bytes[]"
-      }
-    ],
-    "name": "multicall",
-    "outputs": [
-      {
-        "internalType": "bytes[]",
-        "name": "",
-        "type": "bytes[]"
-      }
-    ],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "deadline",
-        "type": "uint256"
-      },
-      {
-        "internalType": "bytes[]",
-        "name": "data",
-        "type": "bytes[]"
-      }
-    ],
-    "name": "multicall",
-    "outputs": [
-      {
-        "internalType": "bytes[]",
-        "name": "",
-        "type": "bytes[]"
-      }
-    ],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "bytes[]",
-        "name": "data",
-        "type": "bytes[]"
-      }
-    ],
-    "name": "multicall",
-    "outputs": [
-      {
-        "internalType": "bytes[]",
-        "name": "results",
-        "type": "bytes[]"
-      }
-    ],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [],
-    "name": "poolDeployer",
-    "outputs": [
-      {
-        "internalType": "address",
-        "name": "",
-        "type": "address"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [],
-    "name": "positionManager",
-    "outputs": [
-      {
-        "internalType": "address",
-        "name": "",
-        "type": "address"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "token",
-        "type": "address"
-      },
-      {
-        "internalType": "uint256",
-        "name": "value",
-        "type": "uint256"
-      }
-    ],
-    "name": "pull",
-    "outputs": [],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "amountA",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "reserveA",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "reserveB",
-        "type": "uint256"
-      }
-    ],
-    "name": "quote",
-    "outputs": [
-      {
-        "internalType": "uint256",
-        "name": "amountB",
-        "type": "uint256"
-      }
-    ],
-    "stateMutability": "pure",
-    "type": "function"
-  },
-  {
-    "inputs": [],
-    "name": "refundNativeToken",
-    "outputs": [],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "token",
-        "type": "address"
-      },
-      {
-        "internalType": "uint256",
-        "name": "value",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "deadline",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint8",
-        "name": "v",
-        "type": "uint8"
-      },
-      {
-        "internalType": "bytes32",
-        "name": "r",
-        "type": "bytes32"
-      },
-      {
-        "internalType": "bytes32",
-        "name": "s",
-        "type": "bytes32"
-      }
-    ],
-    "name": "selfPermit",
-    "outputs": [],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "token",
-        "type": "address"
-      },
-      {
-        "internalType": "uint256",
-        "name": "nonce",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "expiry",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint8",
-        "name": "v",
-        "type": "uint8"
-      },
-      {
-        "internalType": "bytes32",
-        "name": "r",
-        "type": "bytes32"
-      },
-      {
-        "internalType": "bytes32",
-        "name": "s",
-        "type": "bytes32"
-      }
-    ],
-    "name": "selfPermitAllowed",
-    "outputs": [],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "token",
-        "type": "address"
-      },
-      {
-        "internalType": "uint256",
-        "name": "nonce",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "expiry",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint8",
-        "name": "v",
-        "type": "uint8"
-      },
-      {
-        "internalType": "bytes32",
-        "name": "r",
-        "type": "bytes32"
-      },
-      {
-        "internalType": "bytes32",
-        "name": "s",
-        "type": "bytes32"
-      }
-    ],
-    "name": "selfPermitAllowedIfNecessary",
-    "outputs": [],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "token",
-        "type": "address"
-      },
-      {
-        "internalType": "uint256",
-        "name": "value",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "deadline",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint8",
-        "name": "v",
-        "type": "uint8"
-      },
-      {
-        "internalType": "bytes32",
-        "name": "r",
-        "type": "bytes32"
-      },
-      {
-        "internalType": "bytes32",
-        "name": "s",
-        "type": "bytes32"
-      }
-    ],
-    "name": "selfPermitIfNecessary",
-    "outputs": [],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "amountOutMin",
-        "type": "uint256"
-      },
-      {
-        "internalType": "address[]",
-        "name": "path",
-        "type": "address[]"
-      },
-      {
-        "internalType": "address",
-        "name": "to",
-        "type": "address"
-      }
-    ],
-    "name": "swapExactETHForTokensSupportingFeeOnTransferTokens",
-    "outputs": [],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "amountIn",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "amountOutMin",
-        "type": "uint256"
-      },
-      {
-        "internalType": "address[]",
-        "name": "path",
-        "type": "address[]"
-      },
-      {
-        "internalType": "address",
-        "name": "to",
-        "type": "address"
-      }
-    ],
-    "name": "swapExactTokensForETHSupportingFeeOnTransferTokens",
-    "outputs": [],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "amountIn",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "amountOutMin",
-        "type": "uint256"
-      },
-      {
-        "internalType": "address[]",
-        "name": "path",
-        "type": "address[]"
-      },
-      {
-        "internalType": "address",
-        "name": "to",
-        "type": "address"
-      }
-    ],
-    "name": "swapExactTokensForTokensSupportingFeeOnTransferTokens",
-    "outputs": [],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "token",
-        "type": "address"
-      },
-      {
-        "internalType": "uint256",
-        "name": "amountMinimum",
-        "type": "uint256"
-      },
-      {
-        "internalType": "address",
-        "name": "recipient",
-        "type": "address"
-      }
-    ],
-    "name": "sweepToken",
-    "outputs": [],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "token",
-        "type": "address"
-      },
-      {
-        "internalType": "uint256",
-        "name": "amountMinimum",
-        "type": "uint256"
-      }
-    ],
-    "name": "sweepToken",
-    "outputs": [],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "token",
-        "type": "address"
-      },
-      {
-        "internalType": "uint256",
-        "name": "amountMinimum",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "feeBips",
-        "type": "uint256"
-      },
-      {
-        "internalType": "address",
-        "name": "feeRecipient",
-        "type": "address"
-      }
-    ],
-    "name": "sweepTokenWithFee",
-    "outputs": [],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "token",
-        "type": "address"
-      },
-      {
-        "internalType": "uint256",
-        "name": "amountMinimum",
-        "type": "uint256"
-      },
-      {
-        "internalType": "address",
-        "name": "recipient",
-        "type": "address"
-      },
-      {
-        "internalType": "uint256",
-        "name": "feeBips",
-        "type": "uint256"
-      },
-      {
-        "internalType": "address",
-        "name": "feeRecipient",
-        "type": "address"
-      }
-    ],
-    "name": "sweepTokenWithFee",
-    "outputs": [],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "amountMinimum",
-        "type": "uint256"
-      },
-      {
-        "internalType": "address",
-        "name": "recipient",
-        "type": "address"
-      }
-    ],
-    "name": "unwrapWNativeToken",
-    "outputs": [],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "amountMinimum",
-        "type": "uint256"
-      }
-    ],
-    "name": "unwrapWNativeToken",
-    "outputs": [],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "amountMinimum",
-        "type": "uint256"
-      },
-      {
-        "internalType": "address",
-        "name": "recipient",
-        "type": "address"
-      },
-      {
-        "internalType": "uint256",
-        "name": "feeBips",
-        "type": "uint256"
-      },
-      {
-        "internalType": "address",
-        "name": "feeRecipient",
-        "type": "address"
-      }
-    ],
-    "name": "unwrapWNativeTokenWithFee",
-    "outputs": [],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "amountMinimum",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "feeBips",
-        "type": "uint256"
-      },
-      {
-        "internalType": "address",
-        "name": "feeRecipient",
-        "type": "address"
-      }
-    ],
-    "name": "unwrapWNativeTokenWithFee",
-    "outputs": [],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "value",
-        "type": "uint256"
-      }
-    ],
-    "name": "wrapETH",
-    "outputs": [],
-    "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "stateMutability": "payable",
-    "type": "receive"
-  }
-];
-
-// evm/abis/IApproveAndCall.ts
-var approveAndCallAbi = [
-  {
-    inputs: [
-      {
-        internalType: "address",
-        name: "token",
-        type: "address"
-      }
-    ],
-    name: "approveMax",
-    outputs: [],
-    stateMutability: "payable",
-    type: "function"
-  },
-  {
-    inputs: [
-      {
-        internalType: "address",
-        name: "token",
-        type: "address"
-      }
-    ],
-    name: "approveMaxMinusOne",
-    outputs: [],
-    stateMutability: "payable",
-    type: "function"
-  },
-  {
-    inputs: [
-      {
-        internalType: "address",
-        name: "token",
-        type: "address"
-      }
-    ],
-    name: "approveZeroThenMax",
-    outputs: [],
-    stateMutability: "payable",
-    type: "function"
-  },
-  {
-    inputs: [
-      {
-        internalType: "address",
-        name: "token",
-        type: "address"
-      }
-    ],
-    name: "approveZeroThenMaxMinusOne",
-    outputs: [],
-    stateMutability: "payable",
-    type: "function"
-  },
-  {
-    inputs: [
-      {
-        internalType: "bytes",
-        name: "data",
-        type: "bytes"
-      }
-    ],
-    name: "callPositionManager",
-    outputs: [
-      {
-        internalType: "bytes",
-        name: "result",
-        type: "bytes"
-      }
-    ],
-    stateMutability: "payable",
-    type: "function"
-  },
-  {
-    inputs: [
-      {
-        internalType: "address",
-        name: "token",
-        type: "address"
-      },
-      {
-        internalType: "uint256",
-        name: "amount",
-        type: "uint256"
-      }
-    ],
-    name: "getApprovalType",
-    outputs: [
-      {
-        internalType: "enum IApproveAndCall.ApprovalType",
-        name: "",
-        type: "uint8"
-      }
-    ],
-    stateMutability: "nonpayable",
-    type: "function"
-  },
-  {
-    inputs: [
-      {
-        components: [
-          {
-            internalType: "address",
-            name: "token0",
-            type: "address"
-          },
-          {
-            internalType: "address",
-            name: "token1",
-            type: "address"
-          },
-          {
-            internalType: "uint256",
-            name: "tokenId",
-            type: "uint256"
-          },
-          {
-            internalType: "uint256",
-            name: "amount0Min",
-            type: "uint256"
-          },
-          {
-            internalType: "uint256",
-            name: "amount1Min",
-            type: "uint256"
-          }
-        ],
-        internalType: "struct IApproveAndCall.IncreaseLiquidityParams",
-        name: "params",
-        type: "tuple"
-      }
-    ],
-    name: "increaseLiquidity",
-    outputs: [
-      {
-        internalType: "bytes",
-        name: "result",
-        type: "bytes"
-      }
-    ],
-    stateMutability: "payable",
-    type: "function"
-  },
-  {
-    inputs: [
-      {
-        components: [
-          {
-            internalType: "address",
-            name: "token0",
-            type: "address"
-          },
-          {
-            internalType: "address",
-            name: "token1",
-            type: "address"
-          },
-          {
-            internalType: "uint24",
-            name: "fee",
-            type: "uint24"
-          },
-          {
-            internalType: "int24",
-            name: "tickLower",
-            type: "int24"
-          },
-          {
-            internalType: "int24",
-            name: "tickUpper",
-            type: "int24"
-          },
-          {
-            internalType: "uint256",
-            name: "amount0Min",
-            type: "uint256"
-          },
-          {
-            internalType: "uint256",
-            name: "amount1Min",
-            type: "uint256"
-          },
-          {
-            internalType: "address",
-            name: "recipient",
-            type: "address"
-          }
-        ],
-        internalType: "struct IApproveAndCall.MintParams",
-        name: "params",
-        type: "tuple"
-      }
-    ],
-    name: "mint",
-    outputs: [
-      {
-        internalType: "bytes",
-        name: "result",
-        type: "bytes"
-      }
-    ],
-    stateMutability: "payable",
-    type: "function"
-  }
-];
-
-// evm/v3-router/utils/approveAndCall.ts
-function isMint(options) {
-  return Object.keys(options).some((k) => k === "recipient");
-}
-var _ApproveAndCall = class {
-  /**
-   * Cannot be constructed.
-   */
-  // eslint-disable-next-line no-useless-constructor, @typescript-eslint/no-empty-function
-  constructor() {
-  }
-  static encodeApproveMax(token) {
-    return encodeFunctionData({
-      abi: _ApproveAndCall.ABI,
-      functionName: "approveMax",
-      args: [token.address]
-    });
-  }
-  static encodeApproveMaxMinusOne(token) {
-    return encodeFunctionData({
-      abi: _ApproveAndCall.ABI,
-      functionName: "approveMaxMinusOne",
-      args: [token.address]
-    });
-  }
-  static encodeApproveZeroThenMax(token) {
-    return encodeFunctionData({
-      abi: _ApproveAndCall.ABI,
-      functionName: "approveZeroThenMax",
-      args: [token.address]
-    });
-  }
-  static encodeApproveZeroThenMaxMinusOne(token) {
-    return encodeFunctionData({
-      abi: _ApproveAndCall.ABI,
-      functionName: "approveZeroThenMaxMinusOne",
-      args: [token.address]
-    });
-  }
-  static encodeCallPositionManager(calldatas) {
-    invariant2(calldatas.length > 0, "NULL_CALLDATA");
-    if (calldatas.length === 1) {
-      return encodeFunctionData({
-        abi: _ApproveAndCall.ABI,
-        functionName: "callPositionManager",
-        args: calldatas
-      });
-    }
-    const encodedMulticall = encodeFunctionData({
-      abi: NonfungiblePositionManager.ABI,
-      functionName: "multicall",
-      args: [calldatas]
-    });
-    return encodeFunctionData({
-      abi: _ApproveAndCall.ABI,
-      functionName: "callPositionManager",
-      args: [encodedMulticall]
-    });
-  }
-  /**
-   * Encode adding liquidity to a position in the nft manager contract
-   * @param position Forcasted position with expected amount out from swap
-   * @param minimalPosition Forcasted position with custom minimal token amounts
-   * @param addLiquidityOptions Options for adding liquidity
-   * @param slippageTolerance Defines maximum slippage
-   */
-  static encodeAddLiquidity(position, minimalPosition, addLiquidityOptions, slippageTolerance) {
-    let { amount0: amount0Min, amount1: amount1Min } = position.mintAmountsWithSlippage(slippageTolerance);
-    if (minimalPosition.amount0.quotient < amount0Min) {
-      amount0Min = minimalPosition.amount0.quotient;
-    }
-    if (minimalPosition.amount1.quotient < amount1Min) {
-      amount1Min = minimalPosition.amount1.quotient;
-    }
-    if (isMint(addLiquidityOptions)) {
-      return encodeFunctionData({
-        abi: _ApproveAndCall.ABI,
-        functionName: "mint",
-        args: [
-          {
-            token0: position.pool.token0.address,
-            token1: position.pool.token1.address,
-            fee: position.pool.fee,
-            tickLower: position.tickLower,
-            tickUpper: position.tickUpper,
-            amount0Min,
-            amount1Min,
-            recipient: addLiquidityOptions.recipient
-          }
-        ]
-      });
-    }
-    return encodeFunctionData({
-      abi: _ApproveAndCall.ABI,
-      functionName: "increaseLiquidity",
-      args: [
-        {
-          token0: position.pool.token0.address,
-          token1: position.pool.token1.address,
-          amount0Min,
-          amount1Min,
-          tokenId: BigInt(addLiquidityOptions.tokenId)
-        }
-      ]
-    });
-  }
-  static encodeApprove(token, approvalType) {
-    switch (approvalType) {
-      case 1 /* MAX */:
-        return _ApproveAndCall.encodeApproveMax(token.wrapped);
-      case 2 /* MAX_MINUS_ONE */:
-        return _ApproveAndCall.encodeApproveMaxMinusOne(token.wrapped);
-      case 3 /* ZERO_THEN_MAX */:
-        return _ApproveAndCall.encodeApproveZeroThenMax(token.wrapped);
-      case 4 /* ZERO_THEN_MAX_MINUS_ONE */:
-        return _ApproveAndCall.encodeApproveZeroThenMaxMinusOne(token.wrapped);
-      default:
-        throw new Error("Error: invalid ApprovalType");
-    }
-  }
-};
-var ApproveAndCall = _ApproveAndCall;
-ApproveAndCall.ABI = approveAndCallAbi;
-
-// evm/abis/IMulticallExtended.ts
-var multicallExtendedAbi = [
-  {
-    inputs: [
-      {
-        internalType: "bytes32",
-        name: "previousBlockhash",
-        type: "bytes32"
-      },
-      {
-        internalType: "bytes[]",
-        name: "data",
-        type: "bytes[]"
-      }
-    ],
-    name: "multicall",
-    outputs: [
-      {
-        internalType: "bytes[]",
-        name: "results",
-        type: "bytes[]"
-      }
-    ],
-    stateMutability: "payable",
-    type: "function"
-  },
-  {
-    inputs: [
-      {
-        internalType: "uint256",
-        name: "deadline",
-        type: "uint256"
-      },
-      {
-        internalType: "bytes[]",
-        name: "data",
-        type: "bytes[]"
-      }
-    ],
-    name: "multicall",
-    outputs: [
-      {
-        internalType: "bytes[]",
-        name: "results",
-        type: "bytes[]"
-      }
-    ],
-    stateMutability: "payable",
-    type: "function"
-  },
-  {
-    inputs: [
-      {
-        internalType: "bytes[]",
-        name: "data",
-        type: "bytes[]"
-      }
-    ],
-    name: "multicall",
-    outputs: [
-      {
-        internalType: "bytes[]",
-        name: "results",
-        type: "bytes[]"
-      }
-    ],
-    stateMutability: "payable",
-    type: "function"
-  }
-];
-
-// evm/v3-router/utils/multicallExtended.ts
-function validateAndParseBytes32(bytes32) {
-  if (!bytes32.match(/^0x[0-9a-fA-F]{64}$/)) {
-    throw new Error(`${bytes32} is not valid bytes32.`);
-  }
-  return bytes32.toLowerCase();
-}
-var _MulticallExtended = class {
-  /**
-   * Cannot be constructed.
-   */
-  // eslint-disable-next-line no-useless-constructor, @typescript-eslint/no-empty-function
-  constructor() {
-  }
-  static encodeMulticall(calldatas, validation) {
-    if (typeof validation === "undefined") {
-      return Multicall.encodeMulticall(calldatas);
-    }
-    if (!Array.isArray(calldatas)) {
-      calldatas = [calldatas];
-    }
-    if (typeof validation === "string" && validation.startsWith("0x")) {
-      const previousBlockhash = validateAndParseBytes32(validation);
-      return encodeFunctionData({
-        abi: _MulticallExtended.ABI,
-        functionName: "multicall",
-        args: [previousBlockhash, calldatas]
-      });
-    }
-    const deadline = BigInt(validation);
-    return encodeFunctionData({
-      abi: _MulticallExtended.ABI,
-      functionName: "multicall",
-      args: [deadline, calldatas]
-    });
-  }
-};
-var MulticallExtended = _MulticallExtended;
-MulticallExtended.ABI = multicallExtendedAbi;
-
-// evm/abis/IPeripheryPaymentsWithFeeExtended.ts
-var peripheryPaymentsWithFeeExtendedAbi = [
-  {
-    inputs: [
-      {
-        internalType: "address",
-        name: "token",
-        type: "address"
-      },
-      {
-        internalType: "uint256",
-        name: "value",
-        type: "uint256"
-      }
-    ],
-    name: "pull",
-    outputs: [],
-    stateMutability: "payable",
-    type: "function"
-  },
-  {
-    inputs: [],
-    name: "refundETH",
-    outputs: [],
-    stateMutability: "payable",
-    type: "function"
-  },
-  {
-    inputs: [
-      {
-        internalType: "address",
-        name: "token",
-        type: "address"
-      },
-      {
-        internalType: "uint256",
-        name: "amountMinimum",
-        type: "uint256"
-      }
-    ],
-    name: "sweepToken",
-    outputs: [],
-    stateMutability: "payable",
-    type: "function"
-  },
-  {
-    inputs: [
-      {
-        internalType: "address",
-        name: "token",
-        type: "address"
-      },
-      {
-        internalType: "uint256",
-        name: "amountMinimum",
-        type: "uint256"
-      },
-      {
-        internalType: "address",
-        name: "recipient",
-        type: "address"
-      }
-    ],
-    name: "sweepToken",
-    outputs: [],
-    stateMutability: "payable",
-    type: "function"
-  },
-  {
-    inputs: [
-      {
-        internalType: "address",
-        name: "token",
-        type: "address"
-      },
-      {
-        internalType: "uint256",
-        name: "amountMinimum",
-        type: "uint256"
-      },
-      {
-        internalType: "uint256",
-        name: "feeBips",
-        type: "uint256"
-      },
-      {
-        internalType: "address",
-        name: "feeRecipient",
-        type: "address"
-      }
-    ],
-    name: "sweepTokenWithFee",
-    outputs: [],
-    stateMutability: "payable",
-    type: "function"
-  },
-  {
-    inputs: [
-      {
-        internalType: "address",
-        name: "token",
-        type: "address"
-      },
-      {
-        internalType: "uint256",
-        name: "amountMinimum",
-        type: "uint256"
-      },
-      {
-        internalType: "address",
-        name: "recipient",
-        type: "address"
-      },
-      {
-        internalType: "uint256",
-        name: "feeBips",
-        type: "uint256"
-      },
-      {
-        internalType: "address",
-        name: "feeRecipient",
-        type: "address"
-      }
-    ],
-    name: "sweepTokenWithFee",
-    outputs: [],
-    stateMutability: "payable",
-    type: "function"
-  },
-  {
-    inputs: [
-      {
-        internalType: "uint256",
-        name: "amountMinimum",
-        type: "uint256"
-      }
-    ],
-    name: "unwrapWETH9",
-    outputs: [],
-    stateMutability: "payable",
-    type: "function"
-  },
-  {
-    inputs: [
-      {
-        internalType: "uint256",
-        name: "amountMinimum",
-        type: "uint256"
-      },
-      {
-        internalType: "address",
-        name: "recipient",
-        type: "address"
-      }
-    ],
-    name: "unwrapWETH9",
-    outputs: [],
-    stateMutability: "payable",
-    type: "function"
-  },
-  {
-    inputs: [
-      {
-        internalType: "uint256",
-        name: "amountMinimum",
-        type: "uint256"
-      },
-      {
-        internalType: "uint256",
-        name: "feeBips",
-        type: "uint256"
-      },
-      {
-        internalType: "address",
-        name: "feeRecipient",
-        type: "address"
-      }
-    ],
-    name: "unwrapWETH9WithFee",
-    outputs: [],
-    stateMutability: "payable",
-    type: "function"
-  },
-  {
-    inputs: [
-      {
-        internalType: "uint256",
-        name: "amountMinimum",
-        type: "uint256"
-      },
-      {
-        internalType: "address",
-        name: "recipient",
-        type: "address"
-      },
-      {
-        internalType: "uint256",
-        name: "feeBips",
-        type: "uint256"
-      },
-      {
-        internalType: "address",
-        name: "feeRecipient",
-        type: "address"
-      }
-    ],
-    name: "unwrapWETH9WithFee",
-    outputs: [],
-    stateMutability: "payable",
-    type: "function"
-  },
-  {
-    inputs: [
-      {
-        internalType: "uint256",
-        name: "value",
-        type: "uint256"
-      }
-    ],
-    name: "wrapETH",
-    outputs: [],
-    stateMutability: "payable",
-    type: "function"
-  }
-];
-
-// evm/v3-router/utils/paymentsExtended.ts
-function encodeFeeBips(fee) {
-  return fee.multiply(1e4).quotient;
-}
-var _PaymentsExtended = class {
-  /**
-   * Cannot be constructed.
-   */
-  // eslint-disable-next-line no-useless-constructor, @typescript-eslint/no-empty-function
-  constructor() {
-  }
-  static encodeUnwrapWETH9(amountMinimum, recipient, feeOptions) {
-    if (typeof recipient === "string") {
-      return Payments.encodeUnwrapWETH9(amountMinimum, recipient, feeOptions);
-    }
-    if (!!feeOptions) {
-      const feeBips = encodeFeeBips(feeOptions.fee);
-      const feeRecipient = validateAndParseAddress(feeOptions.recipient);
-      return encodeFunctionData({
-        abi: _PaymentsExtended.ABI,
-        functionName: "unwrapWETH9WithFee",
-        args: [amountMinimum, feeBips, feeRecipient]
-      });
-    }
-    return encodeFunctionData({
-      abi: _PaymentsExtended.ABI,
-      functionName: "unwrapWETH9",
-      args: [amountMinimum]
-    });
-  }
-  static encodeSweepToken(token, amountMinimum, recipient, feeOptions) {
-    if (typeof recipient === "string") {
-      return Payments.encodeSweepToken(token, amountMinimum, recipient, feeOptions);
-    }
-    if (!!feeOptions) {
-      const feeBips = encodeFeeBips(feeOptions.fee);
-      const feeRecipient = validateAndParseAddress(feeOptions.recipient);
-      return encodeFunctionData({
-        abi: _PaymentsExtended.ABI,
-        functionName: "sweepTokenWithFee",
-        args: [token.address, amountMinimum, feeBips, feeRecipient]
-      });
-    }
-    return encodeFunctionData({
-      abi: _PaymentsExtended.ABI,
-      functionName: "sweepToken",
-      args: [token.address, amountMinimum]
-    });
-  }
-  static encodePull(token, amount) {
-    return encodeFunctionData({ abi: _PaymentsExtended.ABI, functionName: "pull", args: [token.address, amount] });
-  }
-  static encodeWrapETH(amount) {
-    return encodeFunctionData({ abi: _PaymentsExtended.ABI, functionName: "wrapETH", args: [amount] });
-  }
-};
-var PaymentsExtended = _PaymentsExtended;
-PaymentsExtended.ABI = peripheryPaymentsWithFeeExtendedAbi;
-
-// evm/v3-router/utils/swapRouter.ts
-var ZERO2 = 0n;
-var REFUND_ETH_PRICE_IMPACT_THRESHOLD = new Percent(50n, 100n);
-var _SwapRouter = class {
-  /**
-   * Cannot be constructed.
-   */
-  // eslint-disable-next-line no-useless-constructor, @typescript-eslint/no-empty-function
-  constructor() {
-  }
-  /**
-   * @notice Generates the calldata for a Swap with a V2 Route.
-   * @param trade The V2Trade to encode.
-   * @param options SwapOptions to use for the trade.
-   * @param routerMustCustody Flag for whether funds should be sent to the router
-   * @param performAggregatedSlippageCheck Flag for whether we want to perform an aggregated slippage check
-   * @returns A string array of calldatas for the trade.
-   */
-  static encodeV2Swap(trade, options, routerMustCustody, performAggregatedSlippageCheck) {
-    const amountIn = maximumAmountIn(trade, options.slippageTolerance).quotient;
-    const amountOut = minimumAmountOut(trade, options.slippageTolerance).quotient;
-    const route = trade.routes[0];
-    const path = route.path.map((token) => token.wrapped.address);
-    const recipient = routerMustCustody ? ADDRESS_THIS : typeof options.recipient === "undefined" ? MSG_SENDER : validateAndParseAddress(options.recipient);
-    if (trade.tradeType === TradeType.EXACT_INPUT) {
-      const exactInputParams = [amountIn, performAggregatedSlippageCheck ? 0n : amountOut, path, recipient];
-      return encodeFunctionData({
-        abi: _SwapRouter.ABI,
-        functionName: "swapExactTokensForTokens",
-        args: exactInputParams
-      });
-    }
-    const exactOutputParams = [amountOut, amountIn, path, recipient];
-    return encodeFunctionData({
-      abi: _SwapRouter.ABI,
-      functionName: "swapTokensForExactTokens",
-      args: exactOutputParams
-    });
-  }
-  /**
-   * @notice Generates the calldata for a Swap with a Stable Route.
-   * @param trade The Trade to encode.
-   * @param options SwapOptions to use for the trade.
-   * @param routerMustCustody Flag for whether funds should be sent to the router
-   * @param performAggregatedSlippageCheck Flag for whether we want to perform an aggregated slippage check
-   * @returns A string array of calldatas for the trade.
-   */
-  static encodeStableSwap(trade, options, routerMustCustody, performAggregatedSlippageCheck) {
-    const amountIn = maximumAmountIn(trade, options.slippageTolerance).quotient;
-    const amountOut = minimumAmountOut(trade, options.slippageTolerance).quotient;
-    if (trade.routes.length > 1 || trade.routes[0].pools.some((p) => !isStablePool(p))) {
-      throw new Error("Unsupported trade to encode");
-    }
-    const route = trade.routes[0];
-    const path = route.path.map((token) => token.wrapped.address);
-    const flags = route.pools.map((p) => BigInt(p.balances.length));
-    const recipient = routerMustCustody ? ADDRESS_THIS : typeof options.recipient === "undefined" ? MSG_SENDER : validateAndParseAddress(options.recipient);
-    if (trade.tradeType === TradeType.EXACT_INPUT) {
-      const exactInputParams = [
-        path,
-        flags,
-        amountIn,
-        performAggregatedSlippageCheck ? 0n : amountOut,
-        recipient
-      ];
-      return encodeFunctionData({
-        abi: _SwapRouter.ABI,
-        functionName: "exactInputStableSwap",
-        args: exactInputParams
-      });
-    }
-    const exactOutputParams = [path, flags, amountOut, amountIn, recipient];
-    return encodeFunctionData({
-      abi: _SwapRouter.ABI,
-      functionName: "exactOutputStableSwap",
-      args: exactOutputParams
-    });
-  }
-  /**
-   * @notice Generates the calldata for a Swap with a V3 Route.
-   * @param trade The V3Trade to encode.
-   * @param options SwapOptions to use for the trade.
-   * @param routerMustCustody Flag for whether funds should be sent to the router
-   * @param performAggregatedSlippageCheck Flag for whether we want to perform an aggregated slippage check
-   * @returns A string array of calldatas for the trade.
-   */
-  static encodeV3Swap(trade, options, routerMustCustody, performAggregatedSlippageCheck) {
-    const calldatas = [];
-    for (const route of trade.routes) {
-      const { inputAmount, outputAmount, pools, path } = route;
-      const amountIn = maximumAmountIn(trade, options.slippageTolerance, inputAmount).quotient;
-      const amountOut = minimumAmountOut(trade, options.slippageTolerance, outputAmount).quotient;
-      const singleHop = pools.length === 1;
-      const recipient = routerMustCustody ? ADDRESS_THIS : typeof options.recipient === "undefined" ? MSG_SENDER : validateAndParseAddress(options.recipient);
-      if (singleHop) {
-        if (trade.tradeType === TradeType.EXACT_INPUT) {
-          const exactInputSingleParams = {
-            tokenIn: path[0].wrapped.address,
-            tokenOut: path[1].wrapped.address,
-            fee: pools[0].fee,
-            recipient,
-            amountIn,
-            amountOutMinimum: performAggregatedSlippageCheck ? 0n : amountOut,
-            sqrtPriceLimitX96: 0n
-          };
-          calldatas.push(
-            encodeFunctionData({
-              abi: _SwapRouter.ABI,
-              functionName: "exactInputSingle",
-              args: [exactInputSingleParams]
-            })
-          );
-        } else {
-          const exactOutputSingleParams = {
-            tokenIn: path[0].wrapped.address,
-            tokenOut: path[1].wrapped.address,
-            fee: pools[0].fee,
-            recipient,
-            amountOut,
-            amountInMaximum: amountIn,
-            sqrtPriceLimitX96: 0n
-          };
-          calldatas.push(
-            encodeFunctionData({
-              abi: _SwapRouter.ABI,
-              functionName: "exactOutputSingle",
-              args: [exactOutputSingleParams]
-            })
-          );
-        }
-      } else {
-        const pathStr = encodeMixedRouteToPath(
-          { ...route, input: inputAmount.currency, output: outputAmount.currency },
-          trade.tradeType === TradeType.EXACT_OUTPUT
-        );
-        if (trade.tradeType === TradeType.EXACT_INPUT) {
-          const exactInputParams = {
-            path: pathStr,
-            recipient,
-            amountIn,
-            amountOutMinimum: performAggregatedSlippageCheck ? 0n : amountOut
-          };
-          calldatas.push(
-            encodeFunctionData({
-              abi: _SwapRouter.ABI,
-              functionName: "exactInput",
-              args: [exactInputParams]
-            })
-          );
-        } else {
-          const exactOutputParams = {
-            path: pathStr,
-            recipient,
-            amountOut,
-            amountInMaximum: amountIn
-          };
-          calldatas.push(
-            encodeFunctionData({
-              abi: _SwapRouter.ABI,
-              functionName: "exactOutput",
-              args: [exactOutputParams]
-            })
-          );
-        }
-      }
-    }
-    return calldatas;
-  }
-  /**
-   * @notice Generates the calldata for a MixedRouteSwap. Since single hop routes are not MixedRoutes, we will instead generate
-   *         them via the existing encodeV3Swap and encodeV2Swap methods.
-   * @param trade The MixedRouteTrade to encode.
-   * @param options SwapOptions to use for the trade.
-   * @param routerMustCustody Flag for whether funds should be sent to the router
-   * @param performAggregatedSlippageCheck Flag for whether we want to perform an aggregated slippage check
-   * @returns A string array of calldatas for the trade.
-   */
-  static encodeMixedRouteSwap(trade, options, routerMustCustody, performAggregatedSlippageCheck) {
-    let calldatas = [];
-    const isExactIn = trade.tradeType === TradeType.EXACT_INPUT;
-    for (const route of trade.routes) {
-      const { inputAmount, outputAmount, pools } = route;
-      const amountIn = maximumAmountIn(trade, options.slippageTolerance, inputAmount).quotient;
-      const amountOut = minimumAmountOut(trade, options.slippageTolerance, outputAmount).quotient;
-      const singleHop = pools.length === 1;
-      const recipient = routerMustCustody ? ADDRESS_THIS : typeof options.recipient === "undefined" ? MSG_SENDER : validateAndParseAddress(options.recipient);
-      const mixedRouteIsAllV3 = (r) => {
-        return r.pools.every(isV3Pool);
-      };
-      const mixedRouteIsAllV2 = (r) => {
-        return r.pools.every(isV2Pool);
-      };
-      const mixedRouteIsAllStable = (r) => {
-        return r.pools.every(isStablePool);
-      };
-      if (singleHop) {
-        if (mixedRouteIsAllV3(route)) {
-          calldatas = [
-            ...calldatas,
-            ..._SwapRouter.encodeV3Swap(
-              {
-                ...trade,
-                routes: [route],
-                inputAmount,
-                outputAmount
-              },
-              options,
-              routerMustCustody,
-              performAggregatedSlippageCheck
-            )
-          ];
-        } else if (mixedRouteIsAllV2(route)) {
-          calldatas = [
-            ...calldatas,
-            _SwapRouter.encodeV2Swap(
-              {
-                ...trade,
-                routes: [route],
-                inputAmount,
-                outputAmount
-              },
-              options,
-              routerMustCustody,
-              performAggregatedSlippageCheck
-            )
-          ];
-        } else if (mixedRouteIsAllStable(route)) {
-          calldatas = [
-            ...calldatas,
-            _SwapRouter.encodeStableSwap(
-              {
-                ...trade,
-                routes: [route],
-                inputAmount,
-                outputAmount
-              },
-              options,
-              routerMustCustody,
-              performAggregatedSlippageCheck
-            )
-          ];
-        } else {
-          throw new Error("Unsupported route to encode");
-        }
-      } else {
-        const sections = partitionMixedRouteByProtocol(route);
-        const isLastSectionInRoute = (i) => {
-          return i === sections.length - 1;
-        };
-        let outputToken;
-        let inputToken = inputAmount.currency.wrapped;
-        for (let i = 0; i < sections.length; i++) {
-          const section = sections[i];
-          outputToken = getOutputOfPools(section, inputToken);
-          const newRoute = buildBaseRoute([...section], inputToken, outputToken);
-          inputToken = outputToken.wrapped;
-          const lastSectionInRoute = isLastSectionInRoute(i);
-          const recipientAddress = lastSectionInRoute ? recipient : ADDRESS_THIS;
-          const inAmount = i === 0 ? amountIn : 0n;
-          const outAmount = !lastSectionInRoute ? 0n : amountOut;
-          if (mixedRouteIsAllV3(newRoute)) {
-            const pathStr = encodeMixedRouteToPath(newRoute, !isExactIn);
-            if (isExactIn) {
-              const exactInputParams = {
-                path: pathStr,
-                recipient: recipientAddress,
-                amountIn: inAmount,
-                amountOutMinimum: outAmount
-              };
-              calldatas.push(
-                encodeFunctionData({
-                  abi: _SwapRouter.ABI,
-                  functionName: "exactInput",
-                  args: [exactInputParams]
-                })
-              );
-            } else {
-              const exactOutputParams = {
-                path: pathStr,
-                recipient,
-                amountOut: outAmount,
-                amountInMaximum: inAmount
-              };
-              calldatas.push(
-                encodeFunctionData({
-                  abi: _SwapRouter.ABI,
-                  functionName: "exactOutput",
-                  args: [exactOutputParams]
-                })
-              );
-            }
-          } else if (mixedRouteIsAllV2(newRoute)) {
-            const path = newRoute.path.map((token) => token.wrapped.address);
-            if (isExactIn) {
-              const exactInputParams = [
-                inAmount,
-                // amountIn
-                outAmount,
-                // amountOutMin
-                path,
-                // path
-                recipientAddress
-                // to
-              ];
-              calldatas.push(
-                encodeFunctionData({
-                  abi: _SwapRouter.ABI,
-                  functionName: "swapExactTokensForTokens",
-                  args: exactInputParams
-                })
-              );
-            } else {
-              const exactOutputParams = [outAmount, inAmount, path, recipientAddress];
-              calldatas.push(
-                encodeFunctionData({
-                  abi: _SwapRouter.ABI,
-                  functionName: "swapTokensForExactTokens",
-                  args: exactOutputParams
-                })
-              );
-            }
-          } else if (mixedRouteIsAllStable(newRoute)) {
-            const path = newRoute.path.map((token) => token.wrapped.address);
-            const flags = newRoute.pools.map((pool) => BigInt(pool.balances.length));
-            if (isExactIn) {
-              const exactInputParams = [
-                path,
-                // path
-                flags,
-                // stable pool types
-                inAmount,
-                // amountIn
-                outAmount,
-                // amountOutMin
-                recipientAddress
-                // to
-              ];
-              calldatas.push(
-                encodeFunctionData({
-                  abi: _SwapRouter.ABI,
-                  functionName: "exactInputStableSwap",
-                  args: exactInputParams
-                })
-              );
-            } else {
-              const exactOutputParams = [path, flags, outAmount, inAmount, recipientAddress];
-              calldatas.push(
-                encodeFunctionData({
-                  abi: _SwapRouter.ABI,
-                  functionName: "exactOutputStableSwap",
-                  args: exactOutputParams
-                })
-              );
-            }
-          } else {
-            throw new Error("Unsupported route");
-          }
-        }
-      }
-    }
-    return calldatas;
-  }
-  static encodeSwaps(anyTrade, options, isSwapAndAdd) {
-    const trades = !Array.isArray(anyTrade) ? [anyTrade] : anyTrade;
-    const numberOfTrades = trades.reduce((numOfTrades, trade) => numOfTrades + trade.routes.length, 0);
-    const sampleTrade = trades[0];
-    invariant2(
-      trades.every((trade) => trade.inputAmount.currency.equals(sampleTrade.inputAmount.currency)),
-      "TOKEN_IN_DIFF"
-    );
-    invariant2(
-      trades.every((trade) => trade.outputAmount.currency.equals(sampleTrade.outputAmount.currency)),
-      "TOKEN_OUT_DIFF"
-    );
-    invariant2(
-      trades.every((trade) => trade.tradeType === sampleTrade.tradeType),
-      "TRADE_TYPE_DIFF"
-    );
-    const calldatas = [];
-    const inputIsNative = sampleTrade.inputAmount.currency.isNative;
-    const outputIsNative = sampleTrade.outputAmount.currency.isNative;
-    const performAggregatedSlippageCheck = sampleTrade.tradeType === TradeType.EXACT_INPUT && numberOfTrades > 2;
-    const routerMustCustody = outputIsNative || !!options.fee || !!isSwapAndAdd || performAggregatedSlippageCheck;
-    if (options.inputTokenPermit) {
-      invariant2(sampleTrade.inputAmount.currency.isToken, "NON_TOKEN_PERMIT");
-      calldatas.push(SelfPermit.encodePermit(sampleTrade.inputAmount.currency, options.inputTokenPermit));
-    }
-    for (const trade of trades) {
-      if (trade.routes.length === 1 && trade.routes[0].type === 0 /* V2 */) {
-        calldatas.push(_SwapRouter.encodeV2Swap(trade, options, routerMustCustody, performAggregatedSlippageCheck));
-      } else if (trade.routes.every((r) => r.type === 1 /* V3 */)) {
-        for (const calldata of _SwapRouter.encodeV3Swap(
-          trade,
-          options,
-          routerMustCustody,
-          performAggregatedSlippageCheck
-        )) {
-          calldatas.push(calldata);
-        }
-      } else {
-        for (const calldata of _SwapRouter.encodeMixedRouteSwap(
-          trade,
-          options,
-          routerMustCustody,
-          performAggregatedSlippageCheck
-        )) {
-          calldatas.push(calldata);
-        }
-      }
-    }
-    const ZERO_IN = CurrencyAmount.fromRawAmount(sampleTrade.inputAmount.currency, 0);
-    const ZERO_OUT = CurrencyAmount.fromRawAmount(sampleTrade.outputAmount.currency, 0);
-    const minAmountOut = trades.reduce(
-      (sum2, trade) => sum2.add(minimumAmountOut(trade, options.slippageTolerance)),
-      ZERO_OUT
-    );
-    const quoteAmountOut = trades.reduce(
-      (sum2, trade) => sum2.add(trade.outputAmount),
-      ZERO_OUT
-    );
-    const totalAmountIn = trades.reduce(
-      (sum2, trade) => sum2.add(maximumAmountIn(trade, options.slippageTolerance)),
-      ZERO_IN
-    );
-    return {
-      calldatas,
-      sampleTrade,
-      routerMustCustody,
-      inputIsNative,
-      outputIsNative,
-      totalAmountIn,
-      minimumAmountOut: minAmountOut,
-      quoteAmountOut
-    };
-  }
-  /**
-   * Produces the on-chain method name to call and the hex encoded parameters to pass as arguments for a given trade.
-   * @param trades to produce call parameters for
-   * @param options options for the call parameters
-   */
-  static swapCallParameters(trades, options) {
-    const {
-      calldatas,
-      sampleTrade,
-      routerMustCustody,
-      inputIsNative,
-      outputIsNative,
-      totalAmountIn,
-      minimumAmountOut: minAmountOut
-    } = _SwapRouter.encodeSwaps(trades, options);
-    if (routerMustCustody) {
-      if (outputIsNative) {
-        calldatas.push(PaymentsExtended.encodeUnwrapWETH9(minAmountOut.quotient, options.recipient, options.fee));
-      } else {
-        calldatas.push(
-          PaymentsExtended.encodeSweepToken(
-            sampleTrade.outputAmount.currency.wrapped,
-            minAmountOut.quotient,
-            options.recipient,
-            options.fee
-          )
-        );
-      }
-    }
-    if (inputIsNative && (sampleTrade.tradeType === TradeType.EXACT_OUTPUT || _SwapRouter.riskOfPartialFill(trades))) {
-      calldatas.push(Payments.encodeRefundETH());
-    }
-    return {
-      calldata: MulticallExtended.encodeMulticall(calldatas, options.deadlineOrPreviousBlockhash),
-      value: toHex(inputIsNative ? totalAmountIn.quotient : ZERO2)
-    };
-  }
-  /**
-   * Produces the on-chain method name to call and the hex encoded parameters to pass as arguments for a given trade.
-   * @param trades to produce call parameters for
-   * @param options options for the call parameters
-   */
-  static swapAndAddCallParameters(trades, options, position, addLiquidityOptions, tokenInApprovalType, tokenOutApprovalType) {
-    const {
-      calldatas,
-      inputIsNative,
-      outputIsNative,
-      sampleTrade,
-      totalAmountIn: totalAmountSwapped,
-      quoteAmountOut,
-      minimumAmountOut: minAmountOut
-    } = _SwapRouter.encodeSwaps(trades, options, true);
-    if (options.outputTokenPermit) {
-      invariant2(quoteAmountOut.currency.isToken, "NON_TOKEN_PERMIT_OUTPUT");
-      calldatas.push(SelfPermit.encodePermit(quoteAmountOut.currency, options.outputTokenPermit));
-    }
-    const {
-      inputAmount: {
-        currency: { chainId }
-      }
-    } = sampleTrade;
-    const zeroForOne = position.pool.token0.wrapped.address === totalAmountSwapped.currency.wrapped.address;
-    const { positionAmountIn, positionAmountOut } = _SwapRouter.getPositionAmounts(position, zeroForOne);
-    const tokenIn = inputIsNative ? WNATIVE[chainId] : positionAmountIn.currency.wrapped;
-    const tokenOut = outputIsNative ? WNATIVE[chainId] : positionAmountOut.currency.wrapped;
-    const amountOutRemaining = positionAmountOut.subtract(quoteAmountOut.wrapped);
-    if (amountOutRemaining.greaterThan(CurrencyAmount.fromRawAmount(positionAmountOut.currency, 0))) {
-      if (outputIsNative) {
-        calldatas.push(PaymentsExtended.encodeWrapETH(amountOutRemaining.quotient));
-      } else {
-        calldatas.push(PaymentsExtended.encodePull(tokenOut, amountOutRemaining.quotient));
-      }
-    }
-    if (inputIsNative) {
-      calldatas.push(PaymentsExtended.encodeWrapETH(positionAmountIn.quotient));
-    } else {
-      calldatas.push(PaymentsExtended.encodePull(tokenIn, positionAmountIn.quotient));
-    }
-    if (tokenInApprovalType !== 0 /* NOT_REQUIRED */)
-      calldatas.push(ApproveAndCall.encodeApprove(tokenIn, tokenInApprovalType));
-    if (tokenOutApprovalType !== 0 /* NOT_REQUIRED */)
-      calldatas.push(ApproveAndCall.encodeApprove(tokenOut, tokenOutApprovalType));
-    const minimalPosition = Position.fromAmounts({
-      pool: position.pool,
-      tickLower: position.tickLower,
-      tickUpper: position.tickUpper,
-      amount0: zeroForOne ? position.amount0.quotient.toString() : minAmountOut.quotient.toString(),
-      amount1: zeroForOne ? minAmountOut.quotient.toString() : position.amount1.quotient.toString(),
-      useFullPrecision: false
-    });
-    calldatas.push(
-      ApproveAndCall.encodeAddLiquidity(position, minimalPosition, addLiquidityOptions, options.slippageTolerance)
-    );
-    if (inputIsNative) {
-      calldatas.push(PaymentsExtended.encodeUnwrapWETH9(ZERO2));
-    } else {
-      calldatas.push(PaymentsExtended.encodeSweepToken(tokenIn, ZERO2));
-    }
-    if (outputIsNative) {
-      calldatas.push(PaymentsExtended.encodeUnwrapWETH9(ZERO2));
-    } else {
-      calldatas.push(PaymentsExtended.encodeSweepToken(tokenOut, ZERO2));
-    }
-    let value;
-    if (inputIsNative) {
-      value = totalAmountSwapped.wrapped.add(positionAmountIn.wrapped).quotient;
-    } else if (outputIsNative) {
-      value = amountOutRemaining.quotient;
-    } else {
-      value = ZERO2;
-    }
-    return {
-      calldata: MulticallExtended.encodeMulticall(calldatas, options.deadlineOrPreviousBlockhash),
-      value: toHex(value.toString())
-    };
-  }
-  // if price impact is very high, there's a chance of hitting max/min prices resulting in a partial fill of the swap
-  static riskOfPartialFill(trades) {
-    if (Array.isArray(trades)) {
-      return trades.some((trade) => {
-        return _SwapRouter.v3TradeWithHighPriceImpact(trade);
-      });
-    }
-    return _SwapRouter.v3TradeWithHighPriceImpact(trades);
-  }
-  static v3TradeWithHighPriceImpact(trade) {
-    return !(trade.routes.length === 1 && trade.routes[0].type === 0 /* V2 */) && getPriceImpact(trade).greaterThan(REFUND_ETH_PRICE_IMPACT_THRESHOLD);
-  }
-  static getPositionAmounts(position, zeroForOne) {
-    const { amount0, amount1 } = position.mintAmounts;
-    const currencyAmount0 = CurrencyAmount.fromRawAmount(position.pool.token0, amount0);
-    const currencyAmount1 = CurrencyAmount.fromRawAmount(position.pool.token1, amount1);
-    const [positionAmountIn, positionAmountOut] = zeroForOne ? [currencyAmount0, currencyAmount1] : [currencyAmount1, currencyAmount0];
-    return { positionAmountIn, positionAmountOut };
-  }
-};
-var SwapRouter = _SwapRouter;
-SwapRouter.ABI = swapRouter02Abi;
-
 // evm/v3-router/utils/transformer.ts
 var transformer_exports = {};
 __export(transformer_exports, {
@@ -3595,16 +802,14 @@ __export(transformer_exports, {
   parseCurrencyAmount: () => parseCurrencyAmount,
   parsePool: () => parsePool,
   parseRoute: () => parseRoute,
-  parseTick: () => parseTick,
   parseTrade: () => parseTrade,
   serializeCurrency: () => serializeCurrency,
   serializeCurrencyAmount: () => serializeCurrencyAmount,
   serializePool: () => serializePool,
   serializeRoute: () => serializeRoute,
-  serializeTick: () => serializeTick,
   serializeTrade: () => serializeTrade
 });
-var ONE_HUNDRED = 100n;
+var ONE_HUNDRED = BigInt(100);
 function serializeCurrency(currency) {
   return {
     address: currency.isNative ? ADDRESS_ZERO : currency.wrapped.address,
@@ -3616,13 +821,6 @@ function serializeCurrencyAmount(amount) {
   return {
     currency: serializeCurrency(amount.currency),
     value: amount.quotient.toString()
-  };
-}
-function serializeTick(tick) {
-  return {
-    index: tick.index,
-    liquidityNet: String(tick.liquidityNet),
-    liquidityGross: String(tick.liquidityGross)
   };
 }
 function serializePool(pool) {
@@ -3641,10 +839,7 @@ function serializePool(pool) {
       liquidity: pool.liquidity.toString(),
       sqrtRatioX96: pool.sqrtRatioX96.toString(),
       token0ProtocolFee: pool.token0ProtocolFee.toFixed(0),
-      token1ProtocolFee: pool.token1ProtocolFee.toFixed(0),
-      ticks: pool.ticks?.map(serializeTick),
-      reserve0: pool.reserve0 && serializeCurrencyAmount(pool.reserve0),
-      reserve1: pool.reserve1 && serializeCurrencyAmount(pool.reserve1)
+      token1ProtocolFee: pool.token1ProtocolFee.toFixed(0)
     };
   }
   if (isStablePool(pool)) {
@@ -3673,11 +868,8 @@ function serializeTrade(trade) {
     outputAmount: serializeCurrencyAmount(trade.outputAmount),
     routes: trade.routes.map(serializeRoute),
     gasEstimate: trade.gasEstimate.toString(),
-    gasEstimateInUSD: trade.gasEstimateInUSD && serializeCurrencyAmount(trade.gasEstimateInUSD)
+    gasEstimateInUSD: serializeCurrencyAmount(trade.gasEstimateInUSD)
   };
-}
-function parseTick(tick) {
-  return new Tick(tick);
 }
 function parseCurrency(chainId, currency) {
   if (currency.address === ADDRESS_ZERO) {
@@ -3705,10 +897,7 @@ function parsePool(chainId, pool) {
       liquidity: BigInt(pool.liquidity),
       sqrtRatioX96: BigInt(pool.sqrtRatioX96),
       token0ProtocolFee: new Percent(pool.token0ProtocolFee, ONE_HUNDRED),
-      token1ProtocolFee: new Percent(pool.token1ProtocolFee, ONE_HUNDRED),
-      ticks: pool.ticks?.map(parseTick),
-      reserve0: pool.reserve0 && parseCurrencyAmount(chainId, pool.reserve0),
-      reserve1: pool.reserve1 && parseCurrencyAmount(chainId, pool.reserve1)
+      token1ProtocolFee: new Percent(pool.token1ProtocolFee, ONE_HUNDRED)
     };
   }
   if (pool.type === 2 /* STABLE */) {
@@ -3716,7 +905,7 @@ function parsePool(chainId, pool) {
       ...pool,
       balances: pool.balances.map((b) => parseCurrencyAmount(chainId, b)),
       amplifier: BigInt(pool.amplifier),
-      fee: new Percent(parseFloat(pool.fee) * 1e6, ONE_HUNDRED * 1000000n)
+      fee: new Percent(parseFloat(pool.fee) * 1e6, ONE_HUNDRED * BigInt(1e6))
     };
   }
   throw new Error("Cannot parse unsupoorted pool");
@@ -3736,80 +925,14 @@ function parseTrade(chainId, trade) {
     inputAmount: parseCurrencyAmount(chainId, trade.inputAmount),
     outputAmount: parseCurrencyAmount(chainId, trade.outputAmount),
     routes: trade.routes.map((r) => parseRoute(chainId, r)),
-    gasEstimate: trade.gasEstimate ? BigInt(trade.gasEstimate) : 0n,
-    gasEstimateInUSD: trade.gasEstimateInUSD && parseCurrencyAmount(chainId, trade.gasEstimateInUSD)
+    gasEstimate: BigInt(trade.gasEstimate),
+    gasEstimateInUSD: parseCurrencyAmount(chainId, trade.gasEstimateInUSD)
   };
 }
 
 // evm/v3-router/functions/getPairCombinations.ts
-var allGauges = GAUGES_CONFIG[ChainId.BSC];
-var getToken = memoize2(
-  (chainId, address) => {
-    if (!chainId || !address) {
-      return void 0;
-    }
-    const tokens = getTokensByChain(chainId);
-    for (const token of tokens) {
-      if (token.address.toLowerCase() === address.toLowerCase()) {
-        return token;
-      }
-    }
-    return void 0;
-  },
-  (chainId, address) => `${chainId}_${address}`
-);
-var getGaugesByChain = memoize2(
-  (chainId) => allGauges.filter((gauge) => gauge.chainId === chainId),
-  (chainId) => chainId
-);
-function isTokenInCommonBases(token) {
-  return Boolean(token && BASES_TO_CHECK_TRADES_AGAINST[token.chainId]?.find((t) => t.equals(token)));
-}
-var getTokenBasesFromGauges = memoize2(
-  (currency) => {
-    const chainId = currency?.chainId;
-    const address = currency?.wrapped.address;
-    const gauges = getGaugesByChain(currency?.chainId);
-    const bases = /* @__PURE__ */ new Set();
-    const addTokenToBases = (token) => token && !isTokenInCommonBases(token) && bases.add(token);
-    const addTokensToBases = (tokens) => tokens.forEach(addTokenToBases);
-    const isCurrentToken = (addr) => addr.toLowerCase() === address?.toLowerCase();
-    if (currency && chainId && isTokenInCommonBases(currency.wrapped)) {
-      return [];
-    }
-    for (const gauge of gauges) {
-      const { type } = gauge;
-      if (type === GaugeType.V2 || type === GaugeType.V3) {
-        const { token0Address, token1Address } = gauge;
-        if (isCurrentToken(token0Address)) {
-          addTokenToBases(getToken(chainId, token1Address));
-        }
-        if (isCurrentToken(token1Address)) {
-          addTokenToBases(getToken(chainId, token0Address));
-        }
-        continue;
-      }
-      if (type === GaugeType.StableSwap) {
-        const { tokenAddresses } = gauge;
-        const index = tokenAddresses.findIndex(isCurrentToken);
-        if (index < 0) {
-          continue;
-        }
-        addTokensToBases(
-          [...tokenAddresses.slice(0, index), ...tokenAddresses.slice(index + 1)].map((addr) => getToken(chainId, addr)).filter((token) => Boolean(token))
-        );
-      }
-    }
-    const baseList = Array.from(bases);
-    log(
-      `[ADDITIONAL_BASES] Token ${currency?.symbol}, bases from guages: [${baseList.map((base) => base.symbol).join(",")}]`
-    );
-    return baseList;
-  },
-  (c) => `${c?.chainId}_${c?.wrapped.address}`
-);
 var resolver = (currencyA, currencyB) => {
-  if (!currencyA || !currencyB || currencyA.chainId !== currencyB.chainId || currencyA.wrapped.equals(currencyB.wrapped)) {
+  if (!currencyA || !currencyB || currencyA.wrapped.equals(currencyB.wrapped)) {
     return `${currencyA?.chainId}_${currencyA?.wrapped?.address}_${currencyB?.wrapped?.address}`;
   }
   const [token0, token1] = currencyA.wrapped.sortsBefore(currencyB.wrapped) ? [currencyA.wrapped, currencyB.wrapped] : [currencyB.wrapped, currencyA.wrapped];
@@ -3821,28 +944,28 @@ function getAdditionalCheckAgainstBaseTokens(currencyA, currencyB) {
     ...chainId ? ADDITIONAL_BASES[chainId] ?? {} : {}
   };
   const uniq = (tokens) => uniqBy(tokens, (t) => t.address);
-  const additionalA = currencyA && chainId ? uniq([...additionalBases[currencyA.wrapped.address] || [], ...getTokenBasesFromGauges(currencyA)]) ?? [] : [];
-  const additionalB = currencyB && chainId ? uniq([...additionalBases[currencyB.wrapped.address] || [], ...getTokenBasesFromGauges(currencyB)]) ?? [] : [];
+  const additionalA = currencyA && chainId ? uniq([...additionalBases[currencyA.wrapped.address] || []]) ?? [] : [];
+  const additionalB = currencyB && chainId ? uniq([...additionalBases[currencyB.wrapped.address] || []]) ?? [] : [];
   return [...additionalA, ...additionalB];
 }
-var getCheckAgainstBaseTokens = memoize2((currencyA, currencyB) => {
+var getCheckAgainstBaseTokens = memoize((currencyA, currencyB) => {
   const chainId = currencyA?.chainId;
   if (!chainId || !currencyA || !currencyB || !isCurrenciesSameChain(currencyA, currencyB)) {
     return [];
   }
-  const [tokenA, tokenB] = chainId ? [wrappedCurrency(currencyA, chainId), wrappedCurrency(currencyB, chainId)] : [void 0, void 0];
+  const [tokenA, tokenB] = chainId ? [wrappedCurrency(currencyA), wrappedCurrency(currencyB)] : [void 0, void 0];
   if (!tokenA || !tokenB) {
     return [];
   }
   const common = BASES_TO_CHECK_TRADES_AGAINST[chainId] ?? [];
   return [...common, ...getAdditionalCheckAgainstBaseTokens(currencyA, currencyB)];
 }, resolver);
-var getPairCombinations = memoize2((currencyA, currencyB) => {
+var getPairCombinations = memoize((currencyA, currencyB) => {
   const chainId = currencyA?.chainId;
   if (!chainId || !currencyA || !currencyB || !isCurrenciesSameChain(currencyA, currencyB)) {
     return [];
   }
-  const [tokenA, tokenB] = chainId ? [wrappedCurrency(currencyA, chainId), wrappedCurrency(currencyB, chainId)] : [void 0, void 0];
+  const [tokenA, tokenB] = chainId ? [wrappedCurrency(currencyA), wrappedCurrency(currencyB)] : [void 0, void 0];
   if (!tokenA || !tokenB) {
     return [];
   }
@@ -4130,14 +1253,14 @@ function getBestSwapRouteBy(tradeType, percentToQuotes, percents, chainId, by, {
     return null;
   }
   let quoteGasAdjusted = sumFn(bestSwap.map((routeWithValidQuote) => routeWithValidQuote.quoteAdjustedForGas));
-  const estimatedGasUsed = bestSwap.map((routeWithValidQuote) => routeWithValidQuote.gasEstimate).reduce((sum2, routeWithValidQuote) => sum2 + routeWithValidQuote, 0n);
+  const estimatedGasUsed = bestSwap.map((routeWithValidQuote) => routeWithValidQuote.gasEstimate).reduce((sum2, routeWithValidQuote) => sum2 + routeWithValidQuote, BigInt(0));
   if (!usdGasTokensByChain[chainId] || !usdGasTokensByChain[chainId][0]) {
     throw new Error(`Could not find a USD token for computing gas costs on ${chainId}`);
   }
   const usdToken = usdGasTokensByChain[chainId][0];
   const usdTokenDecimals = usdToken.decimals;
   const gasCostsL1ToL2 = {
-    gasUsedL1: 0n,
+    gasUsedL1: BigInt(0),
     gasCostL1USD: CurrencyAmount.fromRawAmount(usdToken, 0),
     gasCostL1QuoteToken: CurrencyAmount.fromRawAmount(
       // eslint-disable-next-line @typescript-eslint/no-non-null-asserted-optional-chain
@@ -4153,14 +1276,14 @@ function getBestSwapRouteBy(tradeType, percentToQuotes, percents, chainId, by, {
     }
     return CurrencyAmount.fromRawAmount(
       usdToken,
-      routeWithValidQuote.gasCostInUSD.quotient * 10n ** BigInt(decimalsDiff)
+      routeWithValidQuote.gasCostInUSD.quotient * BigInt(10) ** BigInt(decimalsDiff)
     );
   });
   let estimatedGasUsedUSD = sumFn(estimatedGasUsedUSDs);
   if (!estimatedGasUsedUSD.currency.equals(gasCostL1USD.currency)) {
     const decimalsDiff = usdTokenDecimals - gasCostL1USD.currency.decimals;
     estimatedGasUsedUSD = estimatedGasUsedUSD.add(
-      CurrencyAmount.fromRawAmount(usdToken, gasCostL1USD.quotient * 10n ** BigInt(decimalsDiff))
+      CurrencyAmount.fromRawAmount(usdToken, gasCostL1USD.quotient * BigInt(10) ** BigInt(decimalsDiff))
     );
   } else {
     estimatedGasUsedUSD = estimatedGasUsedUSD.add(gasCostL1USD);
@@ -4225,7 +1348,7 @@ async function createGasModel({
   if (!usdToken) {
     throw new Error(`No valid usd token found on chain ${chainId}`);
   }
-  const nativeWrappedToken = getNativeWrappedToken(chainId);
+  const nativeWrappedToken = getNativeWrappedToken();
   if (!nativeWrappedToken) {
     throw new Error(`Unsupported chain ${chainId}. Native wrapped token not found.`);
   }
@@ -4241,7 +1364,7 @@ async function createGasModel({
     const isQuoteNative = nativeWrappedToken.equals(quoteCurrency.wrapped);
     const totalInitializedTicksCrossed = BigInt(Math.max(1, sum(initializedTickCrossedList)));
     const poolTypeSet = /* @__PURE__ */ new Set();
-    let baseGasUse = 0n;
+    let baseGasUse = BigInt(0);
     for (const pool of pools) {
       const { type } = pool;
       if (isV2Pool(pool)) {
@@ -4272,7 +1395,7 @@ async function createGasModel({
       }
     }
     const tickGasUse = COST_PER_INIT_TICK(chainId) * totalInitializedTicksCrossed;
-    const uninitializedTickGasUse = COST_PER_UNINIT_TICK * 0n;
+    const uninitializedTickGasUse = COST_PER_UNINIT_TICK * BigInt(0);
     baseGasUse = baseGasUse + tickGasUse + uninitializedTickGasUse;
     const baseGasCostWei = gasPrice * baseGasUse;
     const totalGasCostNativeCurrency = CurrencyAmount.fromRawAmount(nativeWrappedToken, baseGasCostWei);
@@ -4319,7 +1442,7 @@ async function getHighestLiquidityNativePool(poolProvider, currency, blockNumber
 }
 async function getHighestLiquidityUSDPool(poolProvider, chainId, blockNumber) {
   const usdToken = getUsdGasToken(chainId);
-  const nativeWrappedToken = getNativeWrappedToken(chainId);
+  const nativeWrappedToken = getNativeWrappedToken();
   if (!usdToken || !nativeWrappedToken) {
     return null;
   }
@@ -4335,7 +1458,7 @@ async function getRoutesWithValidQuote({
   amount,
   baseRoutes,
   distributionPercent,
-  quoteProvider,
+  quoteProvider: quoteProvider2,
   tradeType,
   blockNumber,
   gasModel,
@@ -4354,7 +1477,7 @@ async function getRoutesWithValidQuote({
     ],
     []
   );
-  const getRoutesWithQuote = tradeType === TradeType.EXACT_INPUT ? quoteProvider.getRouteWithQuotesExactIn : quoteProvider.getRouteWithQuotesExactOut;
+  const getRoutesWithQuote = tradeType === TradeType.EXACT_INPUT ? quoteProvider2.getRouteWithQuotesExactIn : quoteProvider2.getRouteWithQuotesExactOut;
   if (!quoterOptimization) {
     return getRoutesWithQuote(routesWithoutQuote, { blockNumber, gasModel, signal });
   }
@@ -4376,6 +1499,8 @@ async function getRoutesWithValidQuote({
   logger.metric("Get quotes", "success, got", quotes.length, "quoted routes", quotes);
   return quotes;
 }
+
+// evm/v3-router/constants/poolSelector.ts
 var DEFAULT_POOL_SELECTOR_CONFIG = {
   topN: 2,
   topNDirectSwaps: 2,
@@ -4385,31 +1510,7 @@ var DEFAULT_POOL_SELECTOR_CONFIG = {
   topNWithBaseToken: 3
 };
 var V3_DEFAULT_POOL_SELECTOR_CONFIG = {
-  [ChainId.BSC]: {
-    topN: 2,
-    topNDirectSwaps: 2,
-    topNTokenInOut: 2,
-    topNSecondHop: 1,
-    topNWithEachBaseToken: 3,
-    topNWithBaseToken: 4
-  },
-  [ChainId.BSC_TESTNET]: {
-    topN: 2,
-    topNDirectSwaps: 2,
-    topNTokenInOut: 2,
-    topNSecondHop: 1,
-    topNWithEachBaseToken: 3,
-    topNWithBaseToken: 4
-  },
-  [ChainId.ETHEREUM]: {
-    topN: 2,
-    topNDirectSwaps: 2,
-    topNTokenInOut: 2,
-    topNSecondHop: 1,
-    topNWithEachBaseToken: 3,
-    topNWithBaseToken: 4
-  },
-  [ChainId.GOERLI]: {
+  [17e3 /* HOLESKY */]: {
     topN: 2,
     topNDirectSwaps: 2,
     topNTokenInOut: 2,
@@ -4419,31 +1520,7 @@ var V3_DEFAULT_POOL_SELECTOR_CONFIG = {
   }
 };
 var V2_DEFAULT_POOL_SELECTOR_CONFIG = {
-  [ChainId.BSC]: {
-    topN: 3,
-    topNDirectSwaps: 2,
-    topNTokenInOut: 2,
-    topNSecondHop: 1,
-    topNWithEachBaseToken: 3,
-    topNWithBaseToken: 3
-  },
-  [ChainId.BSC_TESTNET]: {
-    topN: 3,
-    topNDirectSwaps: 2,
-    topNTokenInOut: 2,
-    topNSecondHop: 1,
-    topNWithEachBaseToken: 3,
-    topNWithBaseToken: 3
-  },
-  [ChainId.ETHEREUM]: {
-    topN: 3,
-    topNDirectSwaps: 2,
-    topNTokenInOut: 2,
-    topNSecondHop: 1,
-    topNWithEachBaseToken: 3,
-    topNWithBaseToken: 3
-  },
-  [ChainId.GOERLI]: {
+  [17e3 /* HOLESKY */]: {
     topN: 3,
     topNDirectSwaps: 2,
     topNTokenInOut: 2,
@@ -4453,40 +1530,19 @@ var V2_DEFAULT_POOL_SELECTOR_CONFIG = {
   }
 };
 var V3_TOKEN_POOL_SELECTOR_CONFIG = {
-  [ChainId.BSC]: {
-    [bscTokens.ankr.address]: {
+  [17e3 /* HOLESKY */]: {
+    [holeskyTokens.usdt.address]: {
       topNTokenInOut: 4
     },
-    [bscTokens.ankrbnb.address]: {
-      topNTokenInOut: 4
-    },
-    [bscTokens.ankrETH.address]: {
-      topNTokenInOut: 4
-    },
-    [bscTokens.wbeth.address]: {
-      topNSecondHop: 3
-    }
-  }
-};
-var V2_TOKEN_POOL_SELECTOR_CONFIG = {
-  [ChainId.BSC]: {
-    // GEM
-    "0x701F1ed50Aa5e784B8Fb89d1Ba05cCCd627839a7": {
+    [holeskyTokens.weth.address]: {
       topNTokenInOut: 4
     }
   }
 };
-var ROUTE_CONFIG_BY_CHAIN = {
-  [ChainId.POLYGON_ZKEVM]: {
-    distributionPercent: 50
-  },
-  [ChainId.ZKSYNC]: {
-    distributionPercent: 20
-  },
-  [ChainId.BASE]: {
-    distributionPercent: 10
-  }
-};
+var V2_TOKEN_POOL_SELECTOR_CONFIG = {};
+
+// evm/v3-router/constants/routeConfig.ts
+var ROUTE_CONFIG_BY_CHAIN = {};
 
 // evm/v3-router/getBestTrade.ts
 async function getBestTrade(amount, currency, tradeType, config) {
@@ -4517,7 +1573,7 @@ async function getBestRoutes(amount, currency, tradeType, routeConfig) {
     maxSplits = 4,
     distributionPercent = 5,
     poolProvider,
-    quoteProvider,
+    quoteProvider: quoteProvider2,
     blockNumber,
     gasPriceWei,
     allowedPoolTypes,
@@ -4555,7 +1611,7 @@ async function getBestRoutes(amount, currency, tradeType, routeConfig) {
     amount,
     baseRoutes,
     distributionPercent,
-    quoteProvider,
+    quoteProvider: quoteProvider2,
     tradeType,
     blockNumber,
     gasModel,
@@ -4568,6 +1624,21 @@ async function getBestRoutes(amount, currency, tradeType, routeConfig) {
 // evm/v3-router/providers/poolProviders/poolProviderWithCache.ts
 function createPoolProviderWithCache(provider) {
   return provider;
+}
+function formatFraction(fraction, precision = 6) {
+  if (!fraction || fraction.denominator === BigInt(0)) {
+    return void 0;
+  }
+  if (fraction.greaterThan(BigInt(10) ** BigInt(precision))) {
+    return fraction.toFixed(0);
+  }
+  return fraction.toSignificant(precision);
+}
+function formatPrice(price, precision) {
+  if (!price) {
+    return void 0;
+  }
+  return formatFraction(price?.asFraction.multiply(price?.scalar), precision);
 }
 
 // evm/utils/withFallback.ts
@@ -4615,19 +1686,19 @@ var tokenPriceQuery = gql`
   query getTokens($pageSize: Int!, $tokenAddrs: [ID!]) {
     tokens(first: $pageSize, where: { id_in: $tokenAddrs }) {
       id
-      derivedUSD
+      derivedUSD: derivedMatic
     }
   }
 `;
 function createCommonTokenPriceProvider(getTokenPrices) {
   return async function getCommonTokenPrices2({ currencyA, currencyB, ...rest }) {
-    const baseTokens3 = getCheckAgainstBaseTokens(currencyA, currencyB);
-    if (!baseTokens3) {
+    const baseTokens = getCheckAgainstBaseTokens(currencyA, currencyB);
+    if (!baseTokens) {
       return null;
     }
     const map = /* @__PURE__ */ new Map();
     const idToToken = {};
-    const addresses = baseTokens3.map((t) => {
+    const addresses = baseTokens.map((t) => {
       const address = getAddress(t.address);
       idToToken[address] = t;
       return address;
@@ -4670,7 +1741,7 @@ var createGetTokenPriceFromLlmaWithCache = ({
   const cache = /* @__PURE__ */ new Map();
   return async ({ addresses, chainId }) => {
     if (!chainId || !getLlamaChainName(chainId)) {
-      return [];
+      throw new Error(`Invalid chain id ${chainId}`);
     }
     const [cachedResults, addressesToFetch] = addresses.reduce(
       ([cachedAddrs, newAddrs], address) => {
@@ -4710,22 +1781,1189 @@ var getCommonTokenPricesByLlma = createCommonTokenPriceProvider(
 );
 var getCommonTokenPricesByWalletApi = createCommonTokenPriceProvider(
   createGetTokenPriceFromLlmaWithCache({
-    endpoint: "https://wallet-api.pancakeswap.com/v1/prices"
+    endpoint: "https://alpha.wallet-api.pancakeswap.com/v0/prices"
   })
 );
 var getCommonTokenPrices = withFallback([
   {
-    asyncFn: ({ currencyA, currencyB }) => getCommonTokenPricesByLlma({ currencyA, currencyB }),
-    timeout: 3e3
-  },
-  {
-    asyncFn: ({ currencyA, currencyB }) => getCommonTokenPricesByWalletApi({ currencyA, currencyB }),
-    timeout: 3e3
-  },
-  {
     asyncFn: ({ currencyA, currencyB, v3SubgraphProvider }) => getCommonTokenPricesBySubgraph({ currencyA, currencyB, provider: v3SubgraphProvider })
   }
 ]);
+
+// evm/abis/AlgebraPoolABI.ts
+var algebraPoolABI = [
+  {
+    "inputs": [],
+    "name": "alreadyInitialized",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "arithmeticError",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "bottomTickLowerThanMIN",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "dynamicFeeActive",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "dynamicFeeDisabled",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "flashInsufficientPaid0",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "flashInsufficientPaid1",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "insufficientInputAmount",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "invalidAmountRequired",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes4",
+        "name": "selector",
+        "type": "bytes4"
+      }
+    ],
+    "name": "invalidHookResponse",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "invalidLimitSqrtPrice",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "invalidNewCommunityFee",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "invalidNewTickSpacing",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "liquidityAdd",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "liquidityOverflow",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "liquiditySub",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "locked",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "notAllowed",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "notInitialized",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "onlyFarming",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "pluginIsNotConnected",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "priceOutOfRange",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "tickInvalidLinks",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "tickIsNotInitialized",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "tickIsNotSpaced",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "tickOutOfRange",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "topTickAboveMAX",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "topTickLowerOrEqBottomTick",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "transferFailed",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "zeroAmountRequired",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "zeroLiquidityActual",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "zeroLiquidityDesired",
+    "type": "error"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "owner",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "int24",
+        "name": "bottomTick",
+        "type": "int24"
+      },
+      {
+        "indexed": true,
+        "internalType": "int24",
+        "name": "topTick",
+        "type": "int24"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint128",
+        "name": "liquidityAmount",
+        "type": "uint128"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amount0",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amount1",
+        "type": "uint256"
+      }
+    ],
+    "name": "Burn",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "owner",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "address",
+        "name": "recipient",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "int24",
+        "name": "bottomTick",
+        "type": "int24"
+      },
+      {
+        "indexed": true,
+        "internalType": "int24",
+        "name": "topTick",
+        "type": "int24"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint128",
+        "name": "amount0",
+        "type": "uint128"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint128",
+        "name": "amount1",
+        "type": "uint128"
+      }
+    ],
+    "name": "Collect",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "uint16",
+        "name": "communityFeeNew",
+        "type": "uint16"
+      }
+    ],
+    "name": "CommunityFee",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "uint16",
+        "name": "fee",
+        "type": "uint16"
+      }
+    ],
+    "name": "Fee",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "sender",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "recipient",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amount0",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amount1",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "paid0",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "paid1",
+        "type": "uint256"
+      }
+    ],
+    "name": "Flash",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "uint160",
+        "name": "price",
+        "type": "uint160"
+      },
+      {
+        "indexed": false,
+        "internalType": "int24",
+        "name": "tick",
+        "type": "int24"
+      }
+    ],
+    "name": "Initialize",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "address",
+        "name": "sender",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "owner",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "int24",
+        "name": "bottomTick",
+        "type": "int24"
+      },
+      {
+        "indexed": true,
+        "internalType": "int24",
+        "name": "topTick",
+        "type": "int24"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint128",
+        "name": "liquidityAmount",
+        "type": "uint128"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amount0",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amount1",
+        "type": "uint256"
+      }
+    ],
+    "name": "Mint",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "address",
+        "name": "newPluginAddress",
+        "type": "address"
+      }
+    ],
+    "name": "Plugin",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "uint8",
+        "name": "newPluginConfig",
+        "type": "uint8"
+      }
+    ],
+    "name": "PluginConfig",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "sender",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "recipient",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "int256",
+        "name": "amount0",
+        "type": "int256"
+      },
+      {
+        "indexed": false,
+        "internalType": "int256",
+        "name": "amount1",
+        "type": "int256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint160",
+        "name": "price",
+        "type": "uint160"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint128",
+        "name": "liquidity",
+        "type": "uint128"
+      },
+      {
+        "indexed": false,
+        "internalType": "int24",
+        "name": "tick",
+        "type": "int24"
+      }
+    ],
+    "name": "Swap",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "int24",
+        "name": "newTickSpacing",
+        "type": "int24"
+      }
+    ],
+    "name": "TickSpacing",
+    "type": "event"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "int24",
+        "name": "bottomTick",
+        "type": "int24"
+      },
+      {
+        "internalType": "int24",
+        "name": "topTick",
+        "type": "int24"
+      },
+      {
+        "internalType": "uint128",
+        "name": "amount",
+        "type": "uint128"
+      },
+      {
+        "internalType": "bytes",
+        "name": "data",
+        "type": "bytes"
+      }
+    ],
+    "name": "burn",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "amount0",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "amount1",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "recipient",
+        "type": "address"
+      },
+      {
+        "internalType": "int24",
+        "name": "bottomTick",
+        "type": "int24"
+      },
+      {
+        "internalType": "int24",
+        "name": "topTick",
+        "type": "int24"
+      },
+      {
+        "internalType": "uint128",
+        "name": "amount0Requested",
+        "type": "uint128"
+      },
+      {
+        "internalType": "uint128",
+        "name": "amount1Requested",
+        "type": "uint128"
+      }
+    ],
+    "name": "collect",
+    "outputs": [
+      {
+        "internalType": "uint128",
+        "name": "amount0",
+        "type": "uint128"
+      },
+      {
+        "internalType": "uint128",
+        "name": "amount1",
+        "type": "uint128"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "communityFeeLastTimestamp",
+    "outputs": [
+      {
+        "internalType": "uint32",
+        "name": "",
+        "type": "uint32"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "communityVault",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "factory",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "fee",
+    "outputs": [
+      {
+        "internalType": "uint16",
+        "name": "currentFee",
+        "type": "uint16"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "recipient",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "amount0",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "amount1",
+        "type": "uint256"
+      },
+      {
+        "internalType": "bytes",
+        "name": "data",
+        "type": "bytes"
+      }
+    ],
+    "name": "flash",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "getCommunityFeePending",
+    "outputs": [
+      {
+        "internalType": "uint128",
+        "name": "",
+        "type": "uint128"
+      },
+      {
+        "internalType": "uint128",
+        "name": "",
+        "type": "uint128"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "getReserves",
+    "outputs": [
+      {
+        "internalType": "uint128",
+        "name": "",
+        "type": "uint128"
+      },
+      {
+        "internalType": "uint128",
+        "name": "",
+        "type": "uint128"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "globalState",
+    "outputs": [
+      {
+        "internalType": "uint160",
+        "name": "price",
+        "type": "uint160"
+      },
+      {
+        "internalType": "int24",
+        "name": "tick",
+        "type": "int24"
+      },
+      {
+        "internalType": "uint16",
+        "name": "fee",
+        "type": "uint16"
+      },
+      {
+        "internalType": "uint8",
+        "name": "pluginConfig",
+        "type": "uint8"
+      },
+      {
+        "internalType": "uint16",
+        "name": "communityFee",
+        "type": "uint16"
+      },
+      {
+        "internalType": "bool",
+        "name": "unlocked",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint160",
+        "name": "initialPrice",
+        "type": "uint160"
+      }
+    ],
+    "name": "initialize",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "liquidity",
+    "outputs": [
+      {
+        "internalType": "uint128",
+        "name": "",
+        "type": "uint128"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "maxLiquidityPerTick",
+    "outputs": [
+      {
+        "internalType": "uint128",
+        "name": "",
+        "type": "uint128"
+      }
+    ],
+    "stateMutability": "pure",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "leftoversRecipient",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "recipient",
+        "type": "address"
+      },
+      {
+        "internalType": "int24",
+        "name": "bottomTick",
+        "type": "int24"
+      },
+      {
+        "internalType": "int24",
+        "name": "topTick",
+        "type": "int24"
+      },
+      {
+        "internalType": "uint128",
+        "name": "liquidityDesired",
+        "type": "uint128"
+      },
+      {
+        "internalType": "bytes",
+        "name": "data",
+        "type": "bytes"
+      }
+    ],
+    "name": "mint",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "amount0",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "amount1",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint128",
+        "name": "liquidityActual",
+        "type": "uint128"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "nextTickGlobal",
+    "outputs": [
+      {
+        "internalType": "int24",
+        "name": "",
+        "type": "int24"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "plugin",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "name": "positions",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "liquidity",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "innerFeeGrowth0Token",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "innerFeeGrowth1Token",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint128",
+        "name": "fees0",
+        "type": "uint128"
+      },
+      {
+        "internalType": "uint128",
+        "name": "fees1",
+        "type": "uint128"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "prevTickGlobal",
+    "outputs": [
+      {
+        "internalType": "int24",
+        "name": "",
+        "type": "int24"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint16",
+        "name": "newCommunityFee",
+        "type": "uint16"
+      }
+    ],
+    "name": "setCommunityFee",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint16",
+        "name": "newFee",
+        "type": "uint16"
+      }
+    ],
+    "name": "setFee",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "newPluginAddress",
+        "type": "address"
+      }
+    ],
+    "name": "setPlugin",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint8",
+        "name": "newConfig",
+        "type": "uint8"
+      }
+    ],
+    "name": "setPluginConfig",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "int24",
+        "name": "newTickSpacing",
+        "type": "int24"
+      }
+    ],
+    "name": "setTickSpacing",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "recipient",
+        "type": "address"
+      },
+      {
+        "internalType": "bool",
+        "name": "zeroToOne",
+        "type": "bool"
+      },
+      {
+        "internalType": "int256",
+        "name": "amountRequired",
+        "type": "int256"
+      },
+      {
+        "internalType": "uint160",
+        "name": "limitSqrtPrice",
+        "type": "uint160"
+      },
+      {
+        "internalType": "bytes",
+        "name": "data",
+        "type": "bytes"
+      }
+    ],
+    "name": "swap",
+    "outputs": [
+      {
+        "internalType": "int256",
+        "name": "amount0",
+        "type": "int256"
+      },
+      {
+        "internalType": "int256",
+        "name": "amount1",
+        "type": "int256"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "leftoversRecipient",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "recipient",
+        "type": "address"
+      },
+      {
+        "internalType": "bool",
+        "name": "zeroToOne",
+        "type": "bool"
+      },
+      {
+        "internalType": "int256",
+        "name": "amountToSell",
+        "type": "int256"
+      },
+      {
+        "internalType": "uint160",
+        "name": "limitSqrtPrice",
+        "type": "uint160"
+      },
+      {
+        "internalType": "bytes",
+        "name": "data",
+        "type": "bytes"
+      }
+    ],
+    "name": "swapWithPaymentInAdvance",
+    "outputs": [
+      {
+        "internalType": "int256",
+        "name": "amount0",
+        "type": "int256"
+      },
+      {
+        "internalType": "int256",
+        "name": "amount1",
+        "type": "int256"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "tickSpacing",
+    "outputs": [
+      {
+        "internalType": "int24",
+        "name": "",
+        "type": "int24"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "int16",
+        "name": "",
+        "type": "int16"
+      }
+    ],
+    "name": "tickTable",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "int24",
+        "name": "",
+        "type": "int24"
+      }
+    ],
+    "name": "ticks",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "liquidityTotal",
+        "type": "uint256"
+      },
+      {
+        "internalType": "int128",
+        "name": "liquidityDelta",
+        "type": "int128"
+      },
+      {
+        "internalType": "int24",
+        "name": "prevTick",
+        "type": "int24"
+      },
+      {
+        "internalType": "int24",
+        "name": "nextTick",
+        "type": "int24"
+      },
+      {
+        "internalType": "uint256",
+        "name": "outerFeeGrowth0Token",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "outerFeeGrowth1Token",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "token0",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "token1",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "totalFeeGrowth0Token",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "totalFeeGrowth1Token",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  }
+];
 
 // evm/abis/IPancakePair.ts
 var pancakePairABI = [
@@ -6509,7 +4747,7 @@ var getV2PoolsOnChain = createOnChainPoolFactory({
   getPossiblePoolMetas: ([currencyA, currencyB]) => [
     { address: computeV2PoolAddress(currencyA.wrapped, currencyB.wrapped), currencyA, currencyB }
   ],
-  buildPoolInfoCalls: ({ address }) => [
+  buildPoolInfoCalls: (address) => [
     {
       address,
       functionName: "getReserves",
@@ -6543,7 +4781,7 @@ var getStablePoolsOnChain = createOnChainPoolFactory({
       currencyB
     }));
   },
-  buildPoolInfoCalls: ({ address }) => [
+  buildPoolInfoCalls: (address) => [
     {
       address,
       functionName: "balances",
@@ -6588,61 +4826,41 @@ var getStablePoolsOnChain = createOnChainPoolFactory({
   }
 });
 var getV3PoolsWithoutTicksOnChain = createOnChainPoolFactory({
-  abi: pancakeV3PoolABI,
+  abi: algebraPoolABI,
   getPossiblePoolMetas: ([currencyA, currencyB]) => {
-    const deployerAddress = DEPLOYER_ADDRESSES[currencyA.chainId];
-    if (!deployerAddress) {
-      return [];
-    }
-    return [FeeAmount.LOWEST, FeeAmount.LOW, FeeAmount.MEDIUM, FeeAmount.HIGH].map((fee) => ({
+    return [FeeAmount.LOWEST].map((fee) => ({
       address: computeV3PoolAddress({
-        deployerAddress,
+        poolDeployer: ALGEBRA_POOL_DEPLOYER,
         tokenA: currencyA.wrapped,
         tokenB: currencyB.wrapped,
-        fee
+        initCodeHashManualOverride: POOL_INIT_CODE_HASH
       }),
       currencyA,
       currencyB,
       fee
     }));
   },
-  buildPoolInfoCalls: ({ address, currencyA, currencyB }) => [
+  buildPoolInfoCalls: (address) => [
     {
       address,
       functionName: "liquidity"
     },
     {
       address,
-      functionName: "slot0"
-    },
-    {
-      abi: erc20Abi,
-      address: currencyA.wrapped.address,
-      functionName: "balanceOf",
-      args: [address]
-    },
-    {
-      abi: erc20Abi,
-      address: currencyB.wrapped.address,
-      functionName: "balanceOf",
-      args: [address]
+      functionName: "globalState"
     }
   ],
-  buildPool: ({ currencyA, currencyB, fee, address }, [liquidity, slot0, balanceA, balanceB]) => {
-    if (!slot0) {
+  buildPool: ({ currencyA, currencyB, fee, address }, [liquidity, globalState]) => {
+    if (!globalState) {
       return null;
     }
-    const [sqrtPriceX96, tick, , , , feeProtocol] = slot0;
-    const sorted = currencyA.wrapped.sortsBefore(currencyB.wrapped);
-    const [balance0, balance1] = sorted ? [balanceA, balanceB] : [balanceB, balanceA];
-    const [token0, token1] = sorted ? [currencyA, currencyB] : [currencyB, currencyA];
-    const [token0ProtocolFee, token1ProtocolFee] = parseProtocolFees(feeProtocol);
+    const [sqrtPriceX96, tick] = globalState;
+    const [token0, token1] = currencyA.wrapped.sortsBefore(currencyB.wrapped) ? [currencyA, currencyB] : [currencyB, currencyA];
+    const [token0ProtocolFee, token1ProtocolFee] = parseProtocolFees(0);
     return {
       type: 1 /* V3 */,
       token0,
       token1,
-      reserve0: CurrencyAmount.fromRawAmount(token0, balance0),
-      reserve1: CurrencyAmount.fromRawAmount(token1, balance1),
       fee,
       liquidity: BigInt(liquidity.toString()),
       sqrtRatioX96: BigInt(sqrtPriceX96.toString()),
@@ -6654,7 +4872,7 @@ var getV3PoolsWithoutTicksOnChain = createOnChainPoolFactory({
   }
 });
 function createOnChainPoolFactory({ abi, getPossiblePoolMetas, buildPoolInfoCalls, buildPool }) {
-  return async function poolFactory(pairs, provider, _blockNumber) {
+  return async function poolFactory(pairs, provider, blockNumber) {
     if (!provider) {
       throw new Error("No valid onchain data provider");
     }
@@ -6676,8 +4894,8 @@ function createOnChainPoolFactory({ abi, getPossiblePoolMetas, buildPoolInfoCall
     }
     let calls = [];
     let poolCallSize = 0;
-    for (const meta of poolMetas) {
-      const poolCalls = buildPoolInfoCalls(meta);
+    for (const { address } of poolMetas) {
+      const poolCalls = buildPoolInfoCalls(address);
       if (!poolCallSize) {
         poolCallSize = poolCalls.length;
       }
@@ -6690,13 +4908,14 @@ function createOnChainPoolFactory({ abi, getPossiblePoolMetas, buildPoolInfoCall
       return [];
     }
     const results = await client.multicall({
-      contracts: calls.map((call) => ({
-        abi: call.abi || abi,
-        address: call.address,
-        functionName: call.functionName,
-        args: call.args
+      contracts: calls.map((call2) => ({
+        abi,
+        address: call2.address,
+        functionName: call2.functionName,
+        args: call2.args
       })),
-      allowFailure: true
+      allowFailure: true,
+      blockNumber: blockNumber ? BigInt(Number(BigInt(blockNumber))) : void 0
     });
     const pools = [];
     for (let i = 0; i < poolMetas.length; i += 1) {
@@ -6765,20 +4984,20 @@ function poolSelectorFactory({
     }
     const poolsFromSubgraph = unorderedPoolsWithTvl.sort(sortByTvl);
     const { chainId } = getToken0(poolsFromSubgraph[0]);
-    const baseTokens3 = BASES_TO_CHECK_TRADES_AGAINST[chainId] ?? [];
+    const baseTokens = BASES_TO_CHECK_TRADES_AGAINST[chainId] ?? [];
     const poolSet = /* @__PURE__ */ new Set();
     const addToPoolSet = (pools2) => {
       for (const pool of pools2) {
         poolSet.add(getPoolAddress2(pool));
       }
     };
-    const topByBaseWithTokenIn = baseTokens3.map((token) => {
+    const topByBaseWithTokenIn = baseTokens.map((token) => {
       return poolsFromSubgraph.filter((subgraphPool) => {
         return getToken0(subgraphPool).wrapped.equals(token) && getToken1(subgraphPool).wrapped.equals(currencyA.wrapped) || getToken1(subgraphPool).wrapped.equals(token) && getToken0(subgraphPool).wrapped.equals(currencyA.wrapped);
       }).sort(sortByTvl).slice(0, POOL_SELECTION_CONFIG.topNWithEachBaseToken);
     }).reduce((acc, cur) => [...acc, ...cur], []).sort(sortByTvl).slice(0, POOL_SELECTION_CONFIG.topNWithBaseToken);
     addToPoolSet(topByBaseWithTokenIn);
-    const topByBaseWithTokenOut = baseTokens3.map((token) => {
+    const topByBaseWithTokenOut = baseTokens.map((token) => {
       return poolsFromSubgraph.filter((subgraphPool) => {
         if (poolSet.has(getPoolAddress2(subgraphPool))) {
           return false;
@@ -6794,7 +5013,7 @@ function poolSelectorFactory({
       return getToken0(subgraphPool).wrapped.equals(currencyA.wrapped) && getToken1(subgraphPool).wrapped.equals(currencyB.wrapped) || getToken1(subgraphPool).wrapped.equals(currencyA.wrapped) && getToken0(subgraphPool).wrapped.equals(currencyB.wrapped);
     }).slice(0, POOL_SELECTION_CONFIG.topNDirectSwaps);
     addToPoolSet(top2DirectPools);
-    const nativeToken = WNATIVE[chainId];
+    const nativeToken = holeskyTokens.weth;
     const top2EthBaseTokenPool = nativeToken ? poolsFromSubgraph.filter((subgraphPool) => {
       if (poolSet.has(getPoolAddress2(subgraphPool))) {
         return false;
@@ -6911,9 +5130,14 @@ function subgraphPoolProviderFactory({
     return pools.filter((p) => !!p);
   };
 }
-var getV3PoolMeta = memoize2(
+var getV3PoolMeta = memoize(
   ([currencyA, currencyB, feeAmount]) => ({
-    address: Pool.getAddress(currencyA.wrapped, currencyB.wrapped, feeAmount),
+    address: computePoolAddress({
+      tokenA: currencyA.wrapped,
+      tokenB: currencyB.wrapped,
+      poolDeployer: ALGEBRA_POOL_DEPLOYER,
+      initCodeHashManualOverride: POOL_INIT_CODE_HASH
+    }),
     currencyA,
     currencyB,
     fee: feeAmount
@@ -6926,8 +5150,8 @@ var getV3PoolMeta = memoize2(
     return [token0.chainId, token0.address, token1.address, feeAmount].join("_");
   }
 );
-var getV3PoolMetas = memoize2(
-  (pair) => [FeeAmount.LOWEST, FeeAmount.LOW, FeeAmount.MEDIUM, FeeAmount.HIGH].map((fee) => getV3PoolMeta([...pair, fee])),
+var getV3PoolMetas = memoize(
+  (pair) => [FeeAmount.LOWEST].map((fee) => getV3PoolMeta([...pair, fee])),
   ([currencyA, currencyB]) => {
     if (currencyA.wrapped.equals(currencyB.wrapped)) {
       return [currencyA.chainId, currencyA.wrapped.address].join("_");
@@ -6942,9 +5166,8 @@ var queryV3Pools = gql`
       id
       tick
       sqrtPrice
-      feeTier
+      feeTier: feeZtO
       liquidity
-      feeProtocol
       totalValueLockedUSD
     }
   }
@@ -6957,14 +5180,14 @@ var getV3PoolSubgraph = subgraphPoolProviderFactory({
       pageSize: 1e3,
       poolAddrs: addresses
     });
-    return poolsFromSubgraph.map(({ id, liquidity, sqrtPrice, tick, totalValueLockedUSD, feeProtocol }) => {
+    return poolsFromSubgraph.map(({ id, liquidity, sqrtPrice, tick, totalValueLockedUSD }) => {
       const meta = getPoolMetaByAddress(id);
       if (!meta) {
         return null;
       }
       const { fee, currencyA, currencyB, address } = meta;
       const [token0, token1] = currencyA.wrapped.sortsBefore(currencyB.wrapped) ? [currencyA, currencyB] : [currencyB, currencyA];
-      const [token0ProtocolFee, token1ProtocolFee] = parseProtocolFees(feeProtocol);
+      const [token0ProtocolFee, token1ProtocolFee] = parseProtocolFees(0);
       return {
         type: 1 /* V3 */,
         fee,
@@ -7075,9 +5298,8 @@ var queryAllV3Pools = gql`
         decimals
       }
       sqrtPrice
-      feeTier
+      feeTier: feeZtO
       liquidity
-      feeProtocol
       totalValueLockedUSD
     }
   }
@@ -7093,8 +5315,8 @@ var getAllV3PoolsFromSubgraph = subgraphAllPoolsQueryFactory({
       }
     );
     return poolsFromSubgraph.map(
-      ({ id, liquidity, sqrtPrice, tick, totalValueLockedUSD, feeProtocol, token0, token1, feeTier }) => {
-        const [token0ProtocolFee, token1ProtocolFee] = parseProtocolFees(feeProtocol);
+      ({ id, liquidity, sqrtPrice, tick, totalValueLockedUSD, token0, token1, feeTier }) => {
+        const [token0ProtocolFee, token1ProtocolFee] = parseProtocolFees(0);
         return {
           type: 1 /* V3 */,
           fee: Number(feeTier),
@@ -7113,21 +5335,6 @@ var getAllV3PoolsFromSubgraph = subgraphAllPoolsQueryFactory({
   },
   getPoolId: (p) => p.address
 });
-function formatFraction(fraction, precision = 6) {
-  if (!fraction || fraction.denominator === BigInt(0)) {
-    return void 0;
-  }
-  if (fraction.greaterThan(BigInt(10) ** BigInt(precision))) {
-    return fraction.toFixed(0);
-  }
-  return fraction.toSignificant(precision);
-}
-function formatPrice(price, precision) {
-  if (!price) {
-    return void 0;
-  }
-  return formatFraction(price?.asFraction.multiply(price?.scalar), precision);
-}
 
 // evm/v3-router/providers/poolProviders/getV2CandidatePools.ts
 function createV2PoolsProviderByCommonTokenPrices(getCommonTokenPrices2) {
@@ -7204,10 +5411,10 @@ async function getV2CandidatePools(params) {
   });
   return getV2PoolsWithFallbacks(params);
 }
-var getV3PoolTvl = memoize2(
+var getV3PoolTvl = memoize(
   (pools, poolAddress) => {
     const poolWithTvl = pools.find((p) => p.address === poolAddress);
-    return poolWithTvl?.tvlUSD || 0n;
+    return poolWithTvl?.tvlUSD || BigInt(0);
   },
   (_, poolAddress) => poolAddress
 );
@@ -7252,10 +5459,7 @@ var createFallbackTvlRefGetter = () => {
     if (cached) {
       return cached;
     }
-    const res = await fetch(`https://routing-api.pancakeswap.com/v0/v3-pools-tvl/${currencyA.chainId}`);
-    const refs = await res.json();
-    cache.set(currencyA.chainId, refs);
-    return refs;
+    throw "E";
   };
 };
 var getV3PoolsWithTvlFromOnChainFallback = v3PoolsOnChainProviderFactory(createFallbackTvlRefGetter());
@@ -7271,18 +5475,10 @@ function createGetV3CandidatePools(defaultGetV3Pools, options) {
 async function getV3CandidatePools(params) {
   const { subgraphFallback = true, staticFallback = true, fallbackTimeout, ...rest } = params;
   const fallbacks = [];
-  if (subgraphFallback) {
-    fallbacks.push(getV3PoolsWithTvlFromOnChain);
-    fallbacks.push(async (p) => {
-      const { currencyA, currencyB, pairs: providedPairs, subgraphProvider } = p;
-      const pairs = providedPairs || getPairCombinations(currencyA, currencyB);
-      return getV3PoolSubgraph({ provider: subgraphProvider, pairs });
-    });
-  }
   if (staticFallback) {
     fallbacks.push(getV3PoolsWithTvlFromOnChainStaticFallback);
   }
-  const getV3PoolsWithFallback = createGetV3CandidatePools(getV3PoolsWithTvlFromOnChainFallback, {
+  const getV3PoolsWithFallback = createGetV3CandidatePools(getV3PoolsWithTvlFromOnChainStaticFallback, {
     fallbacks,
     fallbackTimeout
   });
@@ -7398,13 +5594,11 @@ function createOffChainQuoteProvider() {
           let quoteSuccess = true;
           for (const [pool, i] of each(pools)) {
             if (isV2Pool(pool)) {
-              ;
-              [quote] = getV2Quote(pool, quote);
+              quote = getV2Quote(pool, quote);
               continue;
             }
             if (isStablePool(pool)) {
-              ;
-              [quote] = getStableQuote(pool, quote);
+              quote = getStableQuote(pool, quote);
               continue;
             }
             if (isV3Pool(pool)) {
@@ -7448,26 +5642,24 @@ function createOffChainQuoteProvider() {
   };
 }
 function createGetV2Quote(isExactIn = true) {
-  return function getV2Quote(p, amount) {
-    const { reserve0, reserve1 } = p;
+  return function getV2Quote({ reserve0, reserve1 }, amount) {
+    Pair.getAddress = computePairAddress;
     const pair = new Pair(reserve0.wrapped, reserve1.wrapped);
-    const [quote, newPair] = isExactIn ? pair.getOutputAmount(amount.wrapped) : pair.getInputAmount(amount.wrapped);
-    const newPool = { ...p, reserve0: newPair.reserve0, reserve1: newPair.reserve1 };
-    return [quote, newPool];
+    const [quote] = isExactIn ? pair.getOutputAmount(amount.wrapped) : pair.getInputAmount(amount.wrapped);
+    return quote;
   };
 }
 function createGetStableQuote(isExactIn = true) {
-  const getQuote = isExactIn ? getQuoteExactIn : getQuoteExactOut;
+  const getQuote = isExactIn ? getSwapOutput : getSwapInput;
   return function getStableQuote(pool, amount) {
     const { amplifier, balances, fee } = pool;
-    const [quote, { balances: newBalances }] = getQuote({
+    return getQuote({
       amount,
       balances,
       amplifier,
       outputCurrency: getOutputCurrency(pool, amount.currency),
       fee
     });
-    return [quote, { ...pool, balances: newBalances }];
   };
 }
 function createGetV3Quote(isExactIn = true) {
@@ -7478,50 +5670,39 @@ function createGetV3Quote(isExactIn = true) {
     }
     try {
       const v3Pool = new Pool(token0.wrapped, token1.wrapped, fee, sqrtRatioX96, liquidity, tick, ticks);
-      const [quote, poolAfter] = isExactIn ? await v3Pool.getOutputAmount(amount.wrapped) : await v3Pool.getInputAmountByExactOut(amount.wrapped);
-      if (quote.quotient <= 0n) {
+      const [quote, poolAfter] = isExactIn ? await v3Pool.getOutputAmount(amount.wrapped) : await v3Pool.getInputAmount(amount.wrapped);
+      if (quote.quotient <= BigInt(0)) {
         return null;
       }
       const { tickCurrent: tickAfter } = poolAfter;
-      const newPool = {
-        ...pool,
-        tick: tickAfter,
-        sqrtRatioX96: poolAfter.sqrtRatioX96,
-        liquidity: poolAfter.liquidity
-      };
       const numOfTicksCrossed = TickList.countInitializedTicksCrossed(ticks, tick, tickAfter);
       return {
         quote,
-        numOfTicksCrossed,
-        pool: newPool
+        numOfTicksCrossed
       };
     } catch (e) {
       return null;
     }
   };
 }
-function createPoolQuoteGetter(isExactIn = true) {
-  const getV2Quote = createGetV2Quote(isExactIn);
-  const getStableQuote = createGetStableQuote(isExactIn);
-  const getV3Quote = createGetV3Quote(isExactIn);
-  return async function getPoolQuote(pool, amount) {
-    if (isV2Pool(pool)) {
-      const [quote, newPool] = getV2Quote(pool, amount);
-      return { quote, pool, poolAfter: newPool };
-    }
-    if (isV3Pool(pool)) {
-      const quote = await getV3Quote(pool, amount);
-      return quote ? { quote: quote.quote, pool, poolAfter: quote.pool } : void 0;
-    }
-    if (isStablePool(pool)) {
-      const [quote, newPool] = getStableQuote(pool, amount);
-      return { quote, pool, poolAfter: newPool };
-    }
-    return void 0;
-  };
+
+// evm/utils/abortControl.ts
+var AbortError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "AbortError";
+  }
+};
+function abortInvariant(signal, message) {
+  if (signal?.aborted) {
+    throw new AbortError(message || "Signal aborted");
+  }
+}
+function isAbortError(error) {
+  return error instanceof Error && error.name === "AbortError";
 }
 
-// evm/abis/IMixedRouteQuoterV1.ts
+// evm/abis/algebra/IMixedRouteQuoterV1.ts
 var mixedRouteQuoterV1ABI = [
   {
     "inputs": [
@@ -7762,8 +5943,8 @@ var mixedRouteQuoterV1ABI = [
   }
 ];
 
-// evm/abis/IQuoterV2.ts
-var quoterV2ABI = [
+// evm/abis/algebra/IQuoter.ts
+var algebraQuoterABI = [
   {
     "inputs": [
       {
@@ -7811,6 +5992,11 @@ var quoterV2ABI = [
         "type": "int256"
       },
       {
+        "internalType": "uint256",
+        "name": "feeAmount",
+        "type": "uint256"
+      },
+      {
         "internalType": "bytes",
         "name": "path",
         "type": "bytes"
@@ -7856,7 +6042,7 @@ var quoterV2ABI = [
       },
       {
         "internalType": "uint256",
-        "name": "amountInRequired",
+        "name": "amountIn",
         "type": "uint256"
       }
     ],
@@ -7868,28 +6054,8 @@ var quoterV2ABI = [
         "type": "uint256"
       },
       {
-        "internalType": "uint256",
-        "name": "amountIn",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint160[]",
-        "name": "sqrtPriceX96AfterList",
-        "type": "uint160[]"
-      },
-      {
-        "internalType": "uint32[]",
-        "name": "initializedTicksCrossedList",
-        "type": "uint32[]"
-      },
-      {
-        "internalType": "uint256",
-        "name": "gasEstimate",
-        "type": "uint256"
-      },
-      {
         "internalType": "uint16[]",
-        "name": "feeList",
+        "name": "fees",
         "type": "uint16[]"
       }
     ],
@@ -7899,39 +6065,14 @@ var quoterV2ABI = [
   {
     "inputs": [
       {
-        "components": [
-          {
-            "internalType": "address",
-            "name": "tokenIn",
-            "type": "address"
-          },
-          {
-            "internalType": "address",
-            "name": "tokenOut",
-            "type": "address"
-          },
-          {
-            "internalType": "uint256",
-            "name": "amountIn",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint160",
-            "name": "limitSqrtPrice",
-            "type": "uint160"
-          }
-        ],
-        "internalType": "struct IQuoterV2.QuoteExactInputSingleParams",
-        "name": "params",
-        "type": "tuple"
-      }
-    ],
-    "name": "quoteExactInputSingle",
-    "outputs": [
+        "internalType": "address",
+        "name": "tokenIn",
+        "type": "address"
+      },
       {
-        "internalType": "uint256",
-        "name": "amountOut",
-        "type": "uint256"
+        "internalType": "address",
+        "name": "tokenOut",
+        "type": "address"
       },
       {
         "internalType": "uint256",
@@ -7940,17 +6081,15 @@ var quoterV2ABI = [
       },
       {
         "internalType": "uint160",
-        "name": "sqrtPriceX96After",
+        "name": "limitSqrtPrice",
         "type": "uint160"
-      },
-      {
-        "internalType": "uint32",
-        "name": "initializedTicksCrossed",
-        "type": "uint32"
-      },
+      }
+    ],
+    "name": "quoteExactInputSingle",
+    "outputs": [
       {
         "internalType": "uint256",
-        "name": "gasEstimate",
+        "name": "amountOut",
         "type": "uint256"
       },
       {
@@ -7971,7 +6110,7 @@ var quoterV2ABI = [
       },
       {
         "internalType": "uint256",
-        "name": "amountOutRequired",
+        "name": "amountOut",
         "type": "uint256"
       }
     ],
@@ -7979,32 +6118,12 @@ var quoterV2ABI = [
     "outputs": [
       {
         "internalType": "uint256",
-        "name": "amountOut",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
         "name": "amountIn",
         "type": "uint256"
       },
       {
-        "internalType": "uint160[]",
-        "name": "sqrtPriceX96AfterList",
-        "type": "uint160[]"
-      },
-      {
-        "internalType": "uint32[]",
-        "name": "initializedTicksCrossedList",
-        "type": "uint32[]"
-      },
-      {
-        "internalType": "uint256",
-        "name": "gasEstimate",
-        "type": "uint256"
-      },
-      {
         "internalType": "uint16[]",
-        "name": "feeList",
+        "name": "fees",
         "type": "uint16[]"
       }
     ],
@@ -8014,58 +6133,31 @@ var quoterV2ABI = [
   {
     "inputs": [
       {
-        "components": [
-          {
-            "internalType": "address",
-            "name": "tokenIn",
-            "type": "address"
-          },
-          {
-            "internalType": "address",
-            "name": "tokenOut",
-            "type": "address"
-          },
-          {
-            "internalType": "uint256",
-            "name": "amount",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint160",
-            "name": "limitSqrtPrice",
-            "type": "uint160"
-          }
-        ],
-        "internalType": "struct IQuoterV2.QuoteExactOutputSingleParams",
-        "name": "params",
-        "type": "tuple"
-      }
-    ],
-    "name": "quoteExactOutputSingle",
-    "outputs": [
+        "internalType": "address",
+        "name": "tokenIn",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "tokenOut",
+        "type": "address"
+      },
       {
         "internalType": "uint256",
         "name": "amountOut",
         "type": "uint256"
       },
       {
+        "internalType": "uint160",
+        "name": "limitSqrtPrice",
+        "type": "uint160"
+      }
+    ],
+    "name": "quoteExactOutputSingle",
+    "outputs": [
+      {
         "internalType": "uint256",
         "name": "amountIn",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint160",
-        "name": "sqrtPriceX96After",
-        "type": "uint160"
-      },
-      {
-        "internalType": "uint32",
-        "name": "initializedTicksCrossed",
-        "type": "uint32"
-      },
-      {
-        "internalType": "uint256",
-        "name": "gasEstimate",
         "type": "uint256"
       },
       {
@@ -8078,6 +6170,359 @@ var quoterV2ABI = [
     "type": "function"
   }
 ];
+
+// evm/multicall/src/constants/contracts.ts
+var MULTICALL_ADDRESS = {
+  [17e3 /* HOLESKY */]: "0x4c4849b3aef966e5e39b4abf27767eada487eaa4"
+};
+
+// evm/multicall/src/constants/blockConflictTolerance.ts
+var DEFAULT_BLOCK_CONFLICT_TOLERANCE = 0;
+var BLOCK_CONFLICT_TOLERANCE = {
+  [17e3 /* HOLESKY */]: 3
+};
+
+// evm/multicall/src/constants/gasLimit.ts
+var DEFAULT_GAS_LIMIT = BigInt(15e7);
+var DEFAULT_GAS_LIMIT_BY_CHAIN = {
+  [17e3 /* HOLESKY */]: DEFAULT_GAS_LIMIT
+};
+var DEFAULT_GAS_BUFFER = BigInt(3e6);
+var DEFAULT_GAS_BUFFER_BY_CHAIN = {
+  [17e3 /* HOLESKY */]: DEFAULT_GAS_BUFFER
+};
+
+// evm/multicall/src/abis/IMulticall.ts
+var iMulticallABI = [
+  {
+    inputs: [],
+    name: "gasLeft",
+    outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function"
+  },
+  {
+    inputs: [],
+    name: "gaslimit",
+    outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function"
+  },
+  {
+    inputs: [
+      {
+        components: [
+          { internalType: "address", name: "target", type: "address" },
+          { internalType: "uint256", name: "gasLimit", type: "uint256" },
+          { internalType: "bytes", name: "callData", type: "bytes" }
+        ],
+        internalType: "struct MultiCallV2.Call[]",
+        name: "calls",
+        type: "tuple[]"
+      }
+    ],
+    name: "multicall",
+    outputs: [
+      { internalType: "uint256", name: "blockNumber", type: "uint256" },
+      {
+        components: [
+          { internalType: "bool", name: "success", type: "bool" },
+          { internalType: "uint256", name: "gasUsed", type: "uint256" },
+          { internalType: "bytes", name: "returnData", type: "bytes" }
+        ],
+        internalType: "struct MultiCallV2.Result[]",
+        name: "returnData",
+        type: "tuple[]"
+      }
+    ],
+    stateMutability: "nonpayable",
+    type: "function"
+  },
+  {
+    inputs: [
+      {
+        components: [
+          { internalType: "address", name: "target", type: "address" },
+          { internalType: "uint256", name: "gasLimit", type: "uint256" },
+          { internalType: "bytes", name: "callData", type: "bytes" }
+        ],
+        internalType: "struct MultiCallV2.Call[]",
+        name: "calls",
+        type: "tuple[]"
+      },
+      { internalType: "uint256", name: "gasBuffer", type: "uint256" }
+    ],
+    name: "multicallWithGasLimitation",
+    outputs: [
+      { internalType: "uint256", name: "blockNumber", type: "uint256" },
+      {
+        components: [
+          { internalType: "bool", name: "success", type: "bool" },
+          { internalType: "uint256", name: "gasUsed", type: "uint256" },
+          { internalType: "bytes", name: "returnData", type: "bytes" }
+        ],
+        internalType: "struct MultiCallV2.Result[]",
+        name: "returnData",
+        type: "tuple[]"
+      },
+      { internalType: "uint256", name: "lastSuccessIndex", type: "uint256" }
+    ],
+    stateMutability: "nonpayable",
+    type: "function"
+  }
+];
+
+// evm/multicall/src/getMulticallContract.ts
+function getMulticallContract({ chainId, client }) {
+  const address = MULTICALL_ADDRESS[chainId];
+  if (!address) {
+    throw new Error(`PancakeMulticall not supported on chain ${chainId}`);
+  }
+  return getContract({ abi: iMulticallABI, address, publicClient: client });
+}
+
+// evm/multicall/src/getGasLimit.ts
+function toBigInt(num) {
+  return typeof num === "bigint" ? num : BigInt(num.toString());
+}
+function getDefaultGasLimit(chainId) {
+  const gasLimitOnChain = chainId && DEFAULT_GAS_LIMIT_BY_CHAIN[chainId];
+  return gasLimitOnChain !== void 0 ? gasLimitOnChain : DEFAULT_GAS_LIMIT;
+}
+function getDefaultGasBuffer(chainId) {
+  const gasBufferOnChain = chainId && DEFAULT_GAS_BUFFER_BY_CHAIN[chainId];
+  return gasBufferOnChain !== void 0 ? gasBufferOnChain : DEFAULT_GAS_BUFFER;
+}
+async function getGasLimitOnChain({ chainId, client }) {
+  const multicall = getMulticallContract({ chainId, client });
+  const gasLeft = await multicall.read.gasLeft();
+  return gasLeft;
+}
+async function getGasLimit({
+  chainId,
+  gasLimit: gasLimitInput,
+  maxGasLimit: maxGasLimitInput = getDefaultGasLimit(chainId),
+  gasBuffer: gasBufferInput = getDefaultGasBuffer(chainId),
+  client
+}) {
+  const gasLimitOverride = gasLimitInput && toBigInt(gasLimitInput);
+  const maxGasLimit = toBigInt(maxGasLimitInput);
+  const gasBuffer = toBigInt(gasBufferInput);
+  const gasLimit = gasLimitOverride || await getGasLimitOnChain({ chainId, client }) || maxGasLimit;
+  const minGasLimit = gasLimit < maxGasLimit ? gasLimit : maxGasLimit;
+  return minGasLimit - gasBuffer;
+}
+function isViemAbortError(e) {
+  return e instanceof BaseError && e.walk((err) => err instanceof TimeoutError) instanceof TimeoutError;
+}
+
+// evm/multicall/src/getBlockConflictTolerance.ts
+function getBlockConflictTolerance(chainId) {
+  return BLOCK_CONFLICT_TOLERANCE[chainId] || DEFAULT_BLOCK_CONFLICT_TOLERANCE;
+}
+
+// evm/multicall/src/multicall.ts
+async function multicallByGasLimit(calls, {
+  chainId,
+  gasBuffer = getDefaultGasBuffer(chainId),
+  client,
+  dropUnexecutedCalls,
+  signal,
+  retryFailedCallsWithGreaterLimit,
+  ...rest
+}) {
+  const gasLimit = await getGasLimit({
+    chainId,
+    gasBuffer,
+    client,
+    ...rest
+  });
+  const callResult = await callByChunks(splitCallsIntoChunks(calls, gasLimit), {
+    gasBuffer,
+    client,
+    chainId,
+    dropUnexecutedCalls,
+    signal
+  });
+  if (!retryFailedCallsWithGreaterLimit) {
+    return callResult;
+  }
+  const { gasLimitMultiplier: retryGasLimitMultiplier } = retryFailedCallsWithGreaterLimit;
+  async function retryFailedCalls(result) {
+    if (result.results.every((r) => r.success)) {
+      return result;
+    }
+    let callsToRetry = [];
+    const failedCallIndexes = [];
+    for (const [index, { success }] of result.results.entries()) {
+      if (!success) {
+        failedCallIndexes.push(index);
+        callsToRetry.push(calls[index]);
+      }
+    }
+    if (callsToRetry.some((c) => BigInt(c.gasLimit) > gasLimit)) {
+      console.warn(
+        "Failed to retry with greater limit. The gas limit of some of the calls exceeds the maximum gas limit set by chain"
+      );
+      return result;
+    }
+    callsToRetry = callsToRetry.map((c) => ({ ...c, gasLimit: BigInt(c.gasLimit) * BigInt(retryGasLimitMultiplier) }));
+    const retryResult = await callByChunks(splitCallsIntoChunks(callsToRetry, gasLimit), {
+      gasBuffer,
+      client,
+      chainId,
+      dropUnexecutedCalls,
+      signal
+    });
+    const resultsAfterRetry = [...result.results];
+    for (const [retryIndex, originalIndex] of failedCallIndexes.entries()) {
+      resultsAfterRetry[originalIndex] = retryResult.results[retryIndex];
+    }
+    return retryFailedCalls({
+      results: resultsAfterRetry,
+      blockNumber: retryResult.blockNumber
+    });
+  }
+  return retryFailedCalls(callResult);
+}
+function formatCallReturn([blockNumber, results, successIndex]) {
+  const lastSuccessIndex = Number(successIndex);
+  return {
+    lastSuccessIndex,
+    blockNumber,
+    results: results.slice(0, lastSuccessIndex + 1).map(({ gasUsed, success, returnData }) => ({
+      gasUsed,
+      success,
+      result: returnData
+    }))
+  };
+}
+async function call(calls, params) {
+  const {
+    chainId,
+    client,
+    gasBuffer = getDefaultGasBuffer(chainId),
+    blockConflictTolerance = getBlockConflictTolerance(chainId),
+    dropUnexecutedCalls = false,
+    signal
+  } = params;
+  if (!calls.length) {
+    return {
+      results: [],
+      blockNumber: 0n
+    };
+  }
+  abortInvariant(signal, "Multicall aborted");
+  const contract = getMulticallContract({ chainId, client });
+  try {
+    const { result } = await contract.simulate.multicallWithGasLimitation([calls, gasBuffer]);
+    const { results, lastSuccessIndex, blockNumber } = formatCallReturn(result);
+    if (lastSuccessIndex === calls.length - 1) {
+      return {
+        results,
+        blockNumber
+      };
+    }
+    console.warn(
+      `Gas limit reached. Total num of ${calls.length} calls. First ${lastSuccessIndex + 1} calls executed. The remaining ${calls.length - lastSuccessIndex - 1} calls are not executed. Pls try adjust the gas limit per call.`
+    );
+    const remainingCalls = calls.slice(lastSuccessIndex + 1);
+    if (dropUnexecutedCalls) {
+      return {
+        results: [...results, ...remainingCalls.map(() => ({ result: "0x", gasUsed: 0n, success: false }))],
+        blockNumber
+      };
+    }
+    const { results: remainingResults, blockNumber: nextBlockNumber } = await call(
+      calls.slice(lastSuccessIndex + 1),
+      params
+    );
+    if (Number(nextBlockNumber - blockNumber) > blockConflictTolerance) {
+      throw new Error(
+        `Multicall failed because of block conflict. Latest calls are made at block ${nextBlockNumber} while last calls made at block ${blockNumber}. Block conflict tolerance is ${blockConflictTolerance}`
+      );
+    }
+    return {
+      results: [...results, ...remainingResults],
+      // Use the latest block number
+      blockNumber: nextBlockNumber
+    };
+  } catch (e) {
+    if (isViemAbortError(e)) {
+      throw new AbortError(e.message);
+    }
+    throw e;
+  }
+}
+async function callByChunks(chunks, params) {
+  try {
+    const { blockConflictTolerance = getBlockConflictTolerance(params.chainId) } = params;
+    const callReturns = await Promise.all(chunks.map((chunk2) => call(chunk2, params)));
+    let minBlock = 0n;
+    let maxBlock = 0n;
+    let results = [];
+    for (const { results: callResults, blockNumber } of callReturns) {
+      if (minBlock === 0n || blockNumber < minBlock) {
+        minBlock = blockNumber;
+      }
+      if (blockNumber > maxBlock) {
+        maxBlock = blockNumber;
+      }
+      if (Number(maxBlock - minBlock) > blockConflictTolerance) {
+        throw new Error(
+          `Multicall failed because of block conflict. Min block is ${minBlock} while max block is ${maxBlock}. Block conflict tolerance is ${blockConflictTolerance}`
+        );
+      }
+      results = [...results, ...callResults];
+    }
+    return {
+      results,
+      blockNumber: maxBlock
+    };
+  } catch (e) {
+    if (e instanceof Error && e.message.includes("Storage invocations limit reached") && chunks[0].length > 1) {
+      return callByChunks(divideChunks(chunks), params);
+    }
+    throw e;
+  }
+}
+function divideChunks(chunks) {
+  const newChunks = [];
+  for (const chunk2 of chunks) {
+    const half = Math.ceil(chunk2.length / 2);
+    const firstHalf = chunk2.slice(0, half);
+    const secondHalf = chunk2.slice(half);
+    if (firstHalf.length) {
+      newChunks.push(firstHalf);
+    }
+    if (secondHalf.length) {
+      newChunks.push(secondHalf);
+    }
+  }
+  return newChunks;
+}
+function splitCallsIntoChunks(calls, gasLimit) {
+  const chunks = [[]];
+  let gasLeft = gasLimit;
+  for (const callRequest of calls) {
+    const { target, callData, gasLimit: gasCostLimit } = callRequest;
+    const singleGasLimit = toBigInt(gasCostLimit);
+    const currentChunk = chunks[chunks.length - 1];
+    if (singleGasLimit > gasLeft) {
+      chunks.push([callRequest]);
+      gasLeft = gasLimit - singleGasLimit;
+      if (gasLeft < 0n) {
+        console.warn(
+          `Multicall request may fail as the gas cost of a single call exceeds the gas limit ${gasLimit}. Gas cost: ${singleGasLimit}. To: ${target}. Data: ${callData}`
+        );
+      }
+      continue;
+    }
+    currentChunk.push(callRequest);
+    gasLeft -= singleGasLimit;
+  }
+  return chunks;
+}
 
 // evm/abis/InterfaceMulticall.ts
 var InterfaceMulticall_default = [
@@ -8366,34 +6811,10 @@ var PancakeMulticallProvider = class extends IMulticallProvider {
 };
 PancakeMulticallProvider.abi = InterfaceMulticall_default;
 
-// evm/utils/abortControl.ts
-function isAbortError(error) {
-  return error instanceof Error && error.name === "AbortError";
-}
-
 // evm/v3-router/providers/onChainQuoteProvider.ts
 var DEFAULT_BATCH_RETRIES = 2;
 var SUCCESS_RATE_CONFIG = {
-  [ChainId.BSC_TESTNET]: 0.1,
-  [ChainId.BSC]: 0.1,
-  [ChainId.ETHEREUM]: 0.1,
-  [ChainId.GOERLI]: 0.1,
-  [ChainId.ARBITRUM_ONE]: 0.1,
-  [ChainId.ARBITRUM_GOERLI]: 0.1,
-  [ChainId.POLYGON_ZKEVM]: 0.01,
-  [ChainId.POLYGON_ZKEVM_TESTNET]: 0,
-  [ChainId.ZKSYNC]: 0.2,
-  [ChainId.ZKSYNC_TESTNET]: 0.1,
-  [ChainId.LINEA]: 0.1,
-  [ChainId.LINEA_TESTNET]: 0.1,
-  [ChainId.OPBNB]: 0.1,
-  [ChainId.OPBNB_TESTNET]: 0.1,
-  [ChainId.BASE]: 0.1,
-  [ChainId.BASE_TESTNET]: 0.1,
-  [ChainId.SCROLL_SEPOLIA]: 0.1,
-  [ChainId.SEPOLIA]: 0.1,
-  [ChainId.ARBITRUM_SEPOLIA]: 0.1,
-  [ChainId.BASE_SEPOLIA]: 0.1
+  [17e3 /* HOLESKY */]: 0.1
 };
 var BlockConflictError = class extends Error {
   constructor() {
@@ -8459,7 +6880,7 @@ function onChainQuoteProviderFactory({ getQuoteFunctionName, getQuoterAddress, a
         } = routes[0];
         const quoterAddress = getQuoterAddress(chainId);
         const minSuccessRate = SUCCESS_RATE_CONFIG[chainId];
-        const multicallConfigs = multicallConfigsOverride?.[chainId] || BATCH_MULTICALL_CONFIGS[chainId] || BATCH_MULTICALL_CONFIGS[ChainId.ETHEREUM];
+        const multicallConfigs = multicallConfigsOverride?.[chainId] || BATCH_MULTICALL_CONFIGS[chainId] || BATCH_MULTICALL_CONFIGS[17e3 /* HOLESKY */];
         const {
           defaultConfig: { gasLimitPerCall: defaultGasLimitPerCall, dropUnexecutedCalls }
         } = multicallConfigs;
@@ -8628,7 +7049,7 @@ var createMixedRouteOnChainQuoteProvider = onChainQuoteProviderFactory({
 var createV3OnChainQuoteProvider = onChainQuoteProviderFactory({
   getQuoterAddress: (chainId) => V3_QUOTER_ADDRESSES[chainId],
   getQuoteFunctionName: (isExactIn) => isExactIn ? "quoteExactInput" : "quoteExactOutput",
-  abi: quoterV2ABI,
+  abi: algebraQuoterABI,
   getCallInputs: (route, isExactIn) => [
     encodeMixedRouteToPath(route, !isExactIn),
     `0x${route.amount.quotient.toString(16)}`
@@ -8692,6 +7113,20 @@ function createQuoteProvider(config) {
     getConfig: () => config
   };
 }
+var publicClient = createPublicClient({
+  chain: holesky,
+  transport: http("https://holesky.drpc.org"),
+  batch: {
+    multicall: {
+      batchSize: 1024 * 200
+    }
+  }
+});
+var quoteProvider = createQuoteProvider({
+  onChainProvider: () => publicClient
+});
+var v3SubgraphClient = new GraphQLClient("https://api.thegraph.com/subgraphs/name/iliaazhel/integral-core");
+var v2SubgraphClient = new GraphQLClient("https://api.thegraph.com/subgraphs/name/camelotlabs/camelot-amm");
 
 // evm/v3-router/schema.ts
 var schema_exports = {};
@@ -8717,12 +7152,12 @@ var zCurrencyAmount = z.object({
   value: zBigNumber
 }).required();
 var zV2Pool = z.object({
-  type: z.literal(0 /* V2 */),
+  type: zPoolType,
   reserve0: zCurrencyAmount,
   reserve1: zCurrencyAmount
 }).required();
 var zV3Pool = z.object({
-  type: z.literal(1 /* V3 */),
+  type: zPoolType,
   token0: zCurrency,
   token1: zCurrency,
   fee: zFee,
@@ -8734,7 +7169,7 @@ var zV3Pool = z.object({
   token1ProtocolFee: z.string()
 }).required();
 var zStablePool = z.object({
-  type: z.literal(2 /* STABLE */),
+  type: zPoolType,
   balances: z.array(zCurrencyAmount),
   amplifier: zBigNumber,
   fee: z.string()
@@ -8779,4 +7214,2457 @@ var zRouterPostParams = z.object({
   candidatePools: true
 });
 
-export { ADDITIONAL_BASES, ADDRESS_THIS, BASES_TO_CHECK_TRADES_AGAINST, BASE_SWAP_COST_STABLE_SWAP, BASE_SWAP_COST_V2, BASE_SWAP_COST_V3, BATCH_MULTICALL_CONFIGS, BETTER_TRADE_LESS_HOPS_THRESHOLD, BIG_INT_TEN, BIPS_BASE, COST_PER_EXTRA_HOP_STABLE_SWAP, COST_PER_EXTRA_HOP_V2, COST_PER_HOP_V3, COST_PER_INIT_TICK, COST_PER_UNINIT_TICK, CUSTOM_BASES, MIN_BNB, MIXED_ROUTE_QUOTER_ADDRESSES, MSG_SENDER, PoolType, RouteType, SMART_ROUTER_ADDRESSES, STABLE_SWAP_INFO_ADDRESS, smartRouter_exports as SmartRouter, SwapRouter, transformer_exports as Transformer, V2_FEE_PATH_PLACEHOLDER, V2_ROUTER_ADDRESS, V3_QUOTER_ADDRESSES, V3_TICK_LENS_ADDRESSES, feeOnTransferDetectorAddresses, fetchTokenFeeOnTransfer, fetchTokenFeeOnTransferBatch, getPoolAddress, usdGasTokensByChain };
+// evm/abis/ISwapRouter02.ts
+var swapRouter02Abi = [
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "_factoryV2",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "poolDeployer",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "factoryV3",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "_positionManager",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "_WNativeToken",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "constructor"
+  },
+  {
+    "inputs": [],
+    "name": "WNativeToken",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "int256",
+        "name": "amount0Delta",
+        "type": "int256"
+      },
+      {
+        "internalType": "int256",
+        "name": "amount1Delta",
+        "type": "int256"
+      },
+      {
+        "internalType": "bytes",
+        "name": "_data",
+        "type": "bytes"
+      }
+    ],
+    "name": "algebraSwapCallback",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      }
+    ],
+    "name": "approveMax",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      }
+    ],
+    "name": "approveMaxMinusOne",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      }
+    ],
+    "name": "approveZeroThenMax",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      }
+    ],
+    "name": "approveZeroThenMaxMinusOne",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes",
+        "name": "data",
+        "type": "bytes"
+      }
+    ],
+    "name": "callPositionManager",
+    "outputs": [
+      {
+        "internalType": "bytes",
+        "name": "result",
+        "type": "bytes"
+      }
+    ],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes[]",
+        "name": "paths",
+        "type": "bytes[]"
+      },
+      {
+        "internalType": "uint128[]",
+        "name": "amounts",
+        "type": "uint128[]"
+      },
+      {
+        "internalType": "uint24",
+        "name": "maximumTickDivergence",
+        "type": "uint24"
+      },
+      {
+        "internalType": "uint32",
+        "name": "secondsAgo",
+        "type": "uint32"
+      }
+    ],
+    "name": "checkOracleSlippage",
+    "outputs": [],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes",
+        "name": "path",
+        "type": "bytes"
+      },
+      {
+        "internalType": "uint24",
+        "name": "maximumTickDivergence",
+        "type": "uint24"
+      },
+      {
+        "internalType": "uint32",
+        "name": "secondsAgo",
+        "type": "uint32"
+      }
+    ],
+    "name": "checkOracleSlippage",
+    "outputs": [],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "components": [
+          {
+            "internalType": "bytes",
+            "name": "path",
+            "type": "bytes"
+          },
+          {
+            "internalType": "address",
+            "name": "recipient",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "amountIn",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "amountOutMinimum",
+            "type": "uint256"
+          }
+        ],
+        "internalType": "struct IV3SwapRouter.ExactInputParams",
+        "name": "params",
+        "type": "tuple"
+      }
+    ],
+    "name": "exactInput",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "amountOut",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "tokenIn",
+            "type": "address"
+          },
+          {
+            "internalType": "address",
+            "name": "tokenOut",
+            "type": "address"
+          },
+          {
+            "internalType": "address",
+            "name": "recipient",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "amountIn",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "amountOutMinimum",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint160",
+            "name": "limitSqrtPrice",
+            "type": "uint160"
+          }
+        ],
+        "internalType": "struct IV3SwapRouter.ExactInputSingleParams",
+        "name": "params",
+        "type": "tuple"
+      }
+    ],
+    "name": "exactInputSingle",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "amountOut",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "tokenIn",
+            "type": "address"
+          },
+          {
+            "internalType": "address",
+            "name": "tokenOut",
+            "type": "address"
+          },
+          {
+            "internalType": "address",
+            "name": "recipient",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "amountIn",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "amountOutMinimum",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint160",
+            "name": "limitSqrtPrice",
+            "type": "uint160"
+          }
+        ],
+        "internalType": "struct IV3SwapRouter.ExactInputSingleParams",
+        "name": "params",
+        "type": "tuple"
+      }
+    ],
+    "name": "exactInputSingleSupportingFeeOnTransferTokens",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "amountOut",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "components": [
+          {
+            "internalType": "bytes",
+            "name": "path",
+            "type": "bytes"
+          },
+          {
+            "internalType": "address",
+            "name": "recipient",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "amountOut",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "amountInMaximum",
+            "type": "uint256"
+          }
+        ],
+        "internalType": "struct IV3SwapRouter.ExactOutputParams",
+        "name": "params",
+        "type": "tuple"
+      }
+    ],
+    "name": "exactOutput",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "amountIn",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "tokenIn",
+            "type": "address"
+          },
+          {
+            "internalType": "address",
+            "name": "tokenOut",
+            "type": "address"
+          },
+          {
+            "internalType": "address",
+            "name": "recipient",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "amountOut",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "amountInMaximum",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint160",
+            "name": "limitSqrtPrice",
+            "type": "uint160"
+          }
+        ],
+        "internalType": "struct IV3SwapRouter.ExactOutputSingleParams",
+        "name": "params",
+        "type": "tuple"
+      }
+    ],
+    "name": "exactOutputSingle",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "amountIn",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "factory",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "factoryV2",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "amountIn",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address[]",
+        "name": "path",
+        "type": "address[]"
+      }
+    ],
+    "name": "getAmountsOut",
+    "outputs": [
+      {
+        "internalType": "uint256[]",
+        "name": "amounts",
+        "type": "uint256[]"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      }
+    ],
+    "name": "getApprovalType",
+    "outputs": [
+      {
+        "internalType": "enum IApproveAndCall.ApprovalType",
+        "name": "",
+        "type": "uint8"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "token0",
+            "type": "address"
+          },
+          {
+            "internalType": "address",
+            "name": "token1",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "tokenId",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "amount0Min",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "amount1Min",
+            "type": "uint256"
+          }
+        ],
+        "internalType": "struct IApproveAndCall.IncreaseLiquidityParams",
+        "name": "params",
+        "type": "tuple"
+      }
+    ],
+    "name": "increaseLiquidity",
+    "outputs": [
+      {
+        "internalType": "bytes",
+        "name": "result",
+        "type": "bytes"
+      }
+    ],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "token0",
+            "type": "address"
+          },
+          {
+            "internalType": "address",
+            "name": "token1",
+            "type": "address"
+          },
+          {
+            "internalType": "uint24",
+            "name": "fee",
+            "type": "uint24"
+          },
+          {
+            "internalType": "int24",
+            "name": "tickLower",
+            "type": "int24"
+          },
+          {
+            "internalType": "int24",
+            "name": "tickUpper",
+            "type": "int24"
+          },
+          {
+            "internalType": "uint256",
+            "name": "amount0Min",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "amount1Min",
+            "type": "uint256"
+          },
+          {
+            "internalType": "address",
+            "name": "recipient",
+            "type": "address"
+          }
+        ],
+        "internalType": "struct IApproveAndCall.MintParams",
+        "name": "params",
+        "type": "tuple"
+      }
+    ],
+    "name": "mint",
+    "outputs": [
+      {
+        "internalType": "bytes",
+        "name": "result",
+        "type": "bytes"
+      }
+    ],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "previousBlockhash",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "bytes[]",
+        "name": "data",
+        "type": "bytes[]"
+      }
+    ],
+    "name": "multicall",
+    "outputs": [
+      {
+        "internalType": "bytes[]",
+        "name": "",
+        "type": "bytes[]"
+      }
+    ],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "deadline",
+        "type": "uint256"
+      },
+      {
+        "internalType": "bytes[]",
+        "name": "data",
+        "type": "bytes[]"
+      }
+    ],
+    "name": "multicall",
+    "outputs": [
+      {
+        "internalType": "bytes[]",
+        "name": "",
+        "type": "bytes[]"
+      }
+    ],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes[]",
+        "name": "data",
+        "type": "bytes[]"
+      }
+    ],
+    "name": "multicall",
+    "outputs": [
+      {
+        "internalType": "bytes[]",
+        "name": "results",
+        "type": "bytes[]"
+      }
+    ],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "poolDeployer",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "positionManager",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "value",
+        "type": "uint256"
+      }
+    ],
+    "name": "pull",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "amountA",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "reserveA",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "reserveB",
+        "type": "uint256"
+      }
+    ],
+    "name": "quote",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "amountB",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "pure",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "refundNativeToken",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "value",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "deadline",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint8",
+        "name": "v",
+        "type": "uint8"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "r",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "s",
+        "type": "bytes32"
+      }
+    ],
+    "name": "selfPermit",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "nonce",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "expiry",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint8",
+        "name": "v",
+        "type": "uint8"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "r",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "s",
+        "type": "bytes32"
+      }
+    ],
+    "name": "selfPermitAllowed",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "nonce",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "expiry",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint8",
+        "name": "v",
+        "type": "uint8"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "r",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "s",
+        "type": "bytes32"
+      }
+    ],
+    "name": "selfPermitAllowedIfNecessary",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "value",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "deadline",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint8",
+        "name": "v",
+        "type": "uint8"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "r",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "s",
+        "type": "bytes32"
+      }
+    ],
+    "name": "selfPermitIfNecessary",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "amountOutMin",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address[]",
+        "name": "path",
+        "type": "address[]"
+      },
+      {
+        "internalType": "address",
+        "name": "to",
+        "type": "address"
+      }
+    ],
+    "name": "swapExactETHForTokensSupportingFeeOnTransferTokens",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "amountIn",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "amountOutMin",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address[]",
+        "name": "path",
+        "type": "address[]"
+      },
+      {
+        "internalType": "address",
+        "name": "to",
+        "type": "address"
+      }
+    ],
+    "name": "swapExactTokensForETHSupportingFeeOnTransferTokens",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "amountIn",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "amountOutMin",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address[]",
+        "name": "path",
+        "type": "address[]"
+      },
+      {
+        "internalType": "address",
+        "name": "to",
+        "type": "address"
+      }
+    ],
+    "name": "swapExactTokensForTokensSupportingFeeOnTransferTokens",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "amountMinimum",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "recipient",
+        "type": "address"
+      }
+    ],
+    "name": "sweepToken",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "amountMinimum",
+        "type": "uint256"
+      }
+    ],
+    "name": "sweepToken",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "amountMinimum",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "feeBips",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "feeRecipient",
+        "type": "address"
+      }
+    ],
+    "name": "sweepTokenWithFee",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "amountMinimum",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "recipient",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "feeBips",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "feeRecipient",
+        "type": "address"
+      }
+    ],
+    "name": "sweepTokenWithFee",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "amountMinimum",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "recipient",
+        "type": "address"
+      }
+    ],
+    "name": "unwrapWNativeToken",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "amountMinimum",
+        "type": "uint256"
+      }
+    ],
+    "name": "unwrapWNativeToken",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "amountMinimum",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "recipient",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "feeBips",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "feeRecipient",
+        "type": "address"
+      }
+    ],
+    "name": "unwrapWNativeTokenWithFee",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "amountMinimum",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "feeBips",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "feeRecipient",
+        "type": "address"
+      }
+    ],
+    "name": "unwrapWNativeTokenWithFee",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "value",
+        "type": "uint256"
+      }
+    ],
+    "name": "wrapETH",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "stateMutability": "payable",
+    "type": "receive"
+  }
+];
+
+// evm/abis/IApproveAndCall.ts
+var approveAndCallAbi = [
+  {
+    inputs: [
+      {
+        internalType: "address",
+        name: "token",
+        type: "address"
+      }
+    ],
+    name: "approveMax",
+    outputs: [],
+    stateMutability: "payable",
+    type: "function"
+  },
+  {
+    inputs: [
+      {
+        internalType: "address",
+        name: "token",
+        type: "address"
+      }
+    ],
+    name: "approveMaxMinusOne",
+    outputs: [],
+    stateMutability: "payable",
+    type: "function"
+  },
+  {
+    inputs: [
+      {
+        internalType: "address",
+        name: "token",
+        type: "address"
+      }
+    ],
+    name: "approveZeroThenMax",
+    outputs: [],
+    stateMutability: "payable",
+    type: "function"
+  },
+  {
+    inputs: [
+      {
+        internalType: "address",
+        name: "token",
+        type: "address"
+      }
+    ],
+    name: "approveZeroThenMaxMinusOne",
+    outputs: [],
+    stateMutability: "payable",
+    type: "function"
+  },
+  {
+    inputs: [
+      {
+        internalType: "bytes",
+        name: "data",
+        type: "bytes"
+      }
+    ],
+    name: "callPositionManager",
+    outputs: [
+      {
+        internalType: "bytes",
+        name: "result",
+        type: "bytes"
+      }
+    ],
+    stateMutability: "payable",
+    type: "function"
+  },
+  {
+    inputs: [
+      {
+        internalType: "address",
+        name: "token",
+        type: "address"
+      },
+      {
+        internalType: "uint256",
+        name: "amount",
+        type: "uint256"
+      }
+    ],
+    name: "getApprovalType",
+    outputs: [
+      {
+        internalType: "enum IApproveAndCall.ApprovalType",
+        name: "",
+        type: "uint8"
+      }
+    ],
+    stateMutability: "nonpayable",
+    type: "function"
+  },
+  {
+    inputs: [
+      {
+        components: [
+          {
+            internalType: "address",
+            name: "token0",
+            type: "address"
+          },
+          {
+            internalType: "address",
+            name: "token1",
+            type: "address"
+          },
+          {
+            internalType: "uint256",
+            name: "tokenId",
+            type: "uint256"
+          },
+          {
+            internalType: "uint256",
+            name: "amount0Min",
+            type: "uint256"
+          },
+          {
+            internalType: "uint256",
+            name: "amount1Min",
+            type: "uint256"
+          }
+        ],
+        internalType: "struct IApproveAndCall.IncreaseLiquidityParams",
+        name: "params",
+        type: "tuple"
+      }
+    ],
+    name: "increaseLiquidity",
+    outputs: [
+      {
+        internalType: "bytes",
+        name: "result",
+        type: "bytes"
+      }
+    ],
+    stateMutability: "payable",
+    type: "function"
+  },
+  {
+    inputs: [
+      {
+        components: [
+          {
+            internalType: "address",
+            name: "token0",
+            type: "address"
+          },
+          {
+            internalType: "address",
+            name: "token1",
+            type: "address"
+          },
+          {
+            internalType: "uint24",
+            name: "fee",
+            type: "uint24"
+          },
+          {
+            internalType: "int24",
+            name: "tickLower",
+            type: "int24"
+          },
+          {
+            internalType: "int24",
+            name: "tickUpper",
+            type: "int24"
+          },
+          {
+            internalType: "uint256",
+            name: "amount0Min",
+            type: "uint256"
+          },
+          {
+            internalType: "uint256",
+            name: "amount1Min",
+            type: "uint256"
+          },
+          {
+            internalType: "address",
+            name: "recipient",
+            type: "address"
+          }
+        ],
+        internalType: "struct IApproveAndCall.MintParams",
+        name: "params",
+        type: "tuple"
+      }
+    ],
+    name: "mint",
+    outputs: [
+      {
+        internalType: "bytes",
+        name: "result",
+        type: "bytes"
+      }
+    ],
+    stateMutability: "payable",
+    type: "function"
+  }
+];
+
+// evm/v3-router/utils/approveAndCall.ts
+function isMint(options) {
+  return Object.keys(options).some((k) => k === "recipient");
+}
+var _ApproveAndCall = class {
+  /**
+   * Cannot be constructed.
+   */
+  // eslint-disable-next-line no-useless-constructor, @typescript-eslint/no-empty-function
+  constructor() {
+  }
+  static encodeApproveMax(token) {
+    return encodeFunctionData({
+      abi: _ApproveAndCall.ABI,
+      functionName: "approveMax",
+      args: [token.address]
+    });
+  }
+  static encodeApproveMaxMinusOne(token) {
+    return encodeFunctionData({
+      abi: _ApproveAndCall.ABI,
+      functionName: "approveMaxMinusOne",
+      args: [token.address]
+    });
+  }
+  static encodeApproveZeroThenMax(token) {
+    return encodeFunctionData({
+      abi: _ApproveAndCall.ABI,
+      functionName: "approveZeroThenMax",
+      args: [token.address]
+    });
+  }
+  static encodeApproveZeroThenMaxMinusOne(token) {
+    return encodeFunctionData({
+      abi: _ApproveAndCall.ABI,
+      functionName: "approveZeroThenMaxMinusOne",
+      args: [token.address]
+    });
+  }
+  static encodeCallPositionManager(calldatas) {
+    invariant5(calldatas.length > 0, "NULL_CALLDATA");
+    if (calldatas.length === 1) {
+      return encodeFunctionData({
+        abi: _ApproveAndCall.ABI,
+        functionName: "callPositionManager",
+        args: calldatas
+      });
+    }
+    const encodedMulticall = encodeFunctionData({
+      abi: NonfungiblePositionManager.ABI,
+      functionName: "multicall",
+      args: [calldatas]
+    });
+    return encodeFunctionData({
+      abi: _ApproveAndCall.ABI,
+      functionName: "callPositionManager",
+      args: [encodedMulticall]
+    });
+  }
+  /**
+   * Encode adding liquidity to a position in the nft manager contract
+   * @param position Forcasted position with expected amount out from swap
+   * @param minimalPosition Forcasted position with custom minimal token amounts
+   * @param addLiquidityOptions Options for adding liquidity
+   * @param slippageTolerance Defines maximum slippage
+   */
+  static encodeAddLiquidity(position, minimalPosition, addLiquidityOptions, slippageTolerance) {
+    let { amount0: amount0Min, amount1: amount1Min } = position.mintAmountsWithSlippage(slippageTolerance);
+    if (minimalPosition.amount0.quotient < amount0Min) {
+      amount0Min = minimalPosition.amount0.quotient;
+    }
+    if (minimalPosition.amount1.quotient < amount1Min) {
+      amount1Min = minimalPosition.amount1.quotient;
+    }
+    if (isMint(addLiquidityOptions)) {
+      return encodeFunctionData({
+        abi: _ApproveAndCall.ABI,
+        functionName: "mint",
+        args: [
+          {
+            token0: position.pool.token0.address,
+            token1: position.pool.token1.address,
+            fee: position.pool.fee,
+            tickLower: position.tickLower,
+            tickUpper: position.tickUpper,
+            amount0Min,
+            amount1Min,
+            recipient: addLiquidityOptions.recipient
+          }
+        ]
+      });
+    }
+    return encodeFunctionData({
+      abi: _ApproveAndCall.ABI,
+      functionName: "increaseLiquidity",
+      args: [
+        {
+          token0: position.pool.token0.address,
+          token1: position.pool.token1.address,
+          amount0Min,
+          amount1Min,
+          tokenId: BigInt(addLiquidityOptions.tokenId)
+        }
+      ]
+    });
+  }
+  static encodeApprove(token, approvalType) {
+    switch (approvalType) {
+      case 1 /* MAX */:
+        return _ApproveAndCall.encodeApproveMax(token.wrapped);
+      case 2 /* MAX_MINUS_ONE */:
+        return _ApproveAndCall.encodeApproveMaxMinusOne(token.wrapped);
+      case 3 /* ZERO_THEN_MAX */:
+        return _ApproveAndCall.encodeApproveZeroThenMax(token.wrapped);
+      case 4 /* ZERO_THEN_MAX_MINUS_ONE */:
+        return _ApproveAndCall.encodeApproveZeroThenMaxMinusOne(token.wrapped);
+      default:
+        throw new Error("Error: invalid ApprovalType");
+    }
+  }
+};
+var ApproveAndCall = _ApproveAndCall;
+ApproveAndCall.ABI = approveAndCallAbi;
+
+// evm/abis/IMulticallExtended.ts
+var multicallExtendedAbi = [
+  {
+    inputs: [
+      {
+        internalType: "bytes32",
+        name: "previousBlockhash",
+        type: "bytes32"
+      },
+      {
+        internalType: "bytes[]",
+        name: "data",
+        type: "bytes[]"
+      }
+    ],
+    name: "multicall",
+    outputs: [
+      {
+        internalType: "bytes[]",
+        name: "results",
+        type: "bytes[]"
+      }
+    ],
+    stateMutability: "payable",
+    type: "function"
+  },
+  {
+    inputs: [
+      {
+        internalType: "uint256",
+        name: "deadline",
+        type: "uint256"
+      },
+      {
+        internalType: "bytes[]",
+        name: "data",
+        type: "bytes[]"
+      }
+    ],
+    name: "multicall",
+    outputs: [
+      {
+        internalType: "bytes[]",
+        name: "results",
+        type: "bytes[]"
+      }
+    ],
+    stateMutability: "payable",
+    type: "function"
+  },
+  {
+    inputs: [
+      {
+        internalType: "bytes[]",
+        name: "data",
+        type: "bytes[]"
+      }
+    ],
+    name: "multicall",
+    outputs: [
+      {
+        internalType: "bytes[]",
+        name: "results",
+        type: "bytes[]"
+      }
+    ],
+    stateMutability: "payable",
+    type: "function"
+  }
+];
+
+// evm/v3-router/utils/multicallExtended.ts
+function validateAndParseBytes32(bytes32) {
+  if (!bytes32.match(/^0x[0-9a-fA-F]{64}$/)) {
+    throw new Error(`${bytes32} is not valid bytes32.`);
+  }
+  return bytes32.toLowerCase();
+}
+var _MulticallExtended = class {
+  /**
+   * Cannot be constructed.
+   */
+  // eslint-disable-next-line no-useless-constructor, @typescript-eslint/no-empty-function
+  constructor() {
+  }
+  static encodeMulticall(calldatas, validation) {
+    if (typeof validation === "undefined") {
+      return Multicall.encodeMulticall(calldatas);
+    }
+    if (!Array.isArray(calldatas)) {
+      calldatas = [calldatas];
+    }
+    if (typeof validation === "string" && validation.startsWith("0x")) {
+      const previousBlockhash = validateAndParseBytes32(validation);
+      return encodeFunctionData({
+        abi: _MulticallExtended.ABI,
+        functionName: "multicall",
+        args: [previousBlockhash, calldatas]
+      });
+    }
+    const deadline = BigInt(validation);
+    return encodeFunctionData({
+      abi: _MulticallExtended.ABI,
+      functionName: "multicall",
+      args: [deadline, calldatas]
+    });
+  }
+};
+var MulticallExtended = _MulticallExtended;
+MulticallExtended.ABI = multicallExtendedAbi;
+
+// evm/abis/IPeripheryPaymentsWithFeeExtended.ts
+var peripheryPaymentsWithFeeExtendedAbi = [
+  {
+    inputs: [
+      {
+        internalType: "address",
+        name: "token",
+        type: "address"
+      },
+      {
+        internalType: "uint256",
+        name: "value",
+        type: "uint256"
+      }
+    ],
+    name: "pull",
+    outputs: [],
+    stateMutability: "payable",
+    type: "function"
+  },
+  {
+    inputs: [],
+    name: "refundETH",
+    outputs: [],
+    stateMutability: "payable",
+    type: "function"
+  },
+  {
+    inputs: [
+      {
+        internalType: "address",
+        name: "token",
+        type: "address"
+      },
+      {
+        internalType: "uint256",
+        name: "amountMinimum",
+        type: "uint256"
+      }
+    ],
+    name: "sweepToken",
+    outputs: [],
+    stateMutability: "payable",
+    type: "function"
+  },
+  {
+    inputs: [
+      {
+        internalType: "address",
+        name: "token",
+        type: "address"
+      },
+      {
+        internalType: "uint256",
+        name: "amountMinimum",
+        type: "uint256"
+      },
+      {
+        internalType: "address",
+        name: "recipient",
+        type: "address"
+      }
+    ],
+    name: "sweepToken",
+    outputs: [],
+    stateMutability: "payable",
+    type: "function"
+  },
+  {
+    inputs: [
+      {
+        internalType: "address",
+        name: "token",
+        type: "address"
+      },
+      {
+        internalType: "uint256",
+        name: "amountMinimum",
+        type: "uint256"
+      },
+      {
+        internalType: "uint256",
+        name: "feeBips",
+        type: "uint256"
+      },
+      {
+        internalType: "address",
+        name: "feeRecipient",
+        type: "address"
+      }
+    ],
+    name: "sweepTokenWithFee",
+    outputs: [],
+    stateMutability: "payable",
+    type: "function"
+  },
+  {
+    inputs: [
+      {
+        internalType: "address",
+        name: "token",
+        type: "address"
+      },
+      {
+        internalType: "uint256",
+        name: "amountMinimum",
+        type: "uint256"
+      },
+      {
+        internalType: "address",
+        name: "recipient",
+        type: "address"
+      },
+      {
+        internalType: "uint256",
+        name: "feeBips",
+        type: "uint256"
+      },
+      {
+        internalType: "address",
+        name: "feeRecipient",
+        type: "address"
+      }
+    ],
+    name: "sweepTokenWithFee",
+    outputs: [],
+    stateMutability: "payable",
+    type: "function"
+  },
+  {
+    inputs: [
+      {
+        internalType: "uint256",
+        name: "amountMinimum",
+        type: "uint256"
+      }
+    ],
+    name: "unwrapWETH9",
+    outputs: [],
+    stateMutability: "payable",
+    type: "function"
+  },
+  {
+    inputs: [
+      {
+        internalType: "uint256",
+        name: "amountMinimum",
+        type: "uint256"
+      },
+      {
+        internalType: "address",
+        name: "recipient",
+        type: "address"
+      }
+    ],
+    name: "unwrapWETH9",
+    outputs: [],
+    stateMutability: "payable",
+    type: "function"
+  },
+  {
+    inputs: [
+      {
+        internalType: "uint256",
+        name: "amountMinimum",
+        type: "uint256"
+      },
+      {
+        internalType: "uint256",
+        name: "feeBips",
+        type: "uint256"
+      },
+      {
+        internalType: "address",
+        name: "feeRecipient",
+        type: "address"
+      }
+    ],
+    name: "unwrapWETH9WithFee",
+    outputs: [],
+    stateMutability: "payable",
+    type: "function"
+  },
+  {
+    inputs: [
+      {
+        internalType: "uint256",
+        name: "amountMinimum",
+        type: "uint256"
+      },
+      {
+        internalType: "address",
+        name: "recipient",
+        type: "address"
+      },
+      {
+        internalType: "uint256",
+        name: "feeBips",
+        type: "uint256"
+      },
+      {
+        internalType: "address",
+        name: "feeRecipient",
+        type: "address"
+      }
+    ],
+    name: "unwrapWETH9WithFee",
+    outputs: [],
+    stateMutability: "payable",
+    type: "function"
+  },
+  {
+    inputs: [
+      {
+        internalType: "uint256",
+        name: "value",
+        type: "uint256"
+      }
+    ],
+    name: "wrapETH",
+    outputs: [],
+    stateMutability: "payable",
+    type: "function"
+  }
+];
+
+// evm/v3-router/utils/paymentsExtended.ts
+function encodeFeeBips(fee) {
+  return fee.multiply(1e4).quotient;
+}
+var _PaymentsExtended = class {
+  /**
+   * Cannot be constructed.
+   */
+  // eslint-disable-next-line no-useless-constructor, @typescript-eslint/no-empty-function
+  constructor() {
+  }
+  static encodeUnwrapWETH9(amountMinimum, recipient, feeOptions) {
+    if (typeof recipient === "string") {
+      return Payments.encodeUnwrapWETH9(amountMinimum, recipient, feeOptions);
+    }
+    if (!!feeOptions) {
+      const feeBips = encodeFeeBips(feeOptions.fee);
+      const feeRecipient = validateAndParseAddress(feeOptions.recipient);
+      return encodeFunctionData({
+        abi: _PaymentsExtended.ABI,
+        functionName: "unwrapWETH9WithFee",
+        args: [amountMinimum, feeBips, feeRecipient]
+      });
+    }
+    return encodeFunctionData({
+      abi: _PaymentsExtended.ABI,
+      functionName: "unwrapWETH9",
+      args: [amountMinimum]
+    });
+  }
+  static encodeSweepToken(token, amountMinimum, recipient, feeOptions) {
+    if (typeof recipient === "string") {
+      return Payments.encodeSweepToken(token, amountMinimum, recipient, feeOptions);
+    }
+    if (!!feeOptions) {
+      const feeBips = encodeFeeBips(feeOptions.fee);
+      const feeRecipient = validateAndParseAddress(feeOptions.recipient);
+      return encodeFunctionData({
+        abi: _PaymentsExtended.ABI,
+        functionName: "sweepTokenWithFee",
+        args: [token.address, amountMinimum, feeBips, feeRecipient]
+      });
+    }
+    return encodeFunctionData({
+      abi: _PaymentsExtended.ABI,
+      functionName: "sweepToken",
+      args: [token.address, amountMinimum]
+    });
+  }
+  static encodePull(token, amount) {
+    return encodeFunctionData({ abi: _PaymentsExtended.ABI, functionName: "pull", args: [token.address, amount] });
+  }
+  static encodeWrapETH(amount) {
+    return encodeFunctionData({ abi: _PaymentsExtended.ABI, functionName: "wrapETH", args: [amount] });
+  }
+};
+var PaymentsExtended = _PaymentsExtended;
+PaymentsExtended.ABI = peripheryPaymentsWithFeeExtendedAbi;
+
+// evm/v3-router/utils/partitionMixedRouteByProtocol.ts
+var partitionMixedRouteByProtocol = (route) => {
+  const acc = [];
+  let left = 0;
+  let right = 0;
+  while (right < route.pools.length) {
+    if (route.pools[left].type !== route.pools[right].type) {
+      acc.push(route.pools.slice(left, right));
+      left = right;
+    }
+    right++;
+    if (right === route.pools.length) {
+      acc.push(route.pools.slice(left, right));
+    }
+  }
+  return acc;
+};
+
+// evm/v3-router/utils/getOutputOfPools.ts
+var getOutputOfPools = (pools, firstInputToken) => {
+  const { inputToken: outputToken } = pools.reduce(
+    ({ inputToken }, pool) => {
+      if (!involvesCurrency(pool, inputToken))
+        throw new Error("PATH");
+      const output = getOutputCurrency(pool, inputToken);
+      return {
+        inputToken: output
+      };
+    },
+    { inputToken: firstInputToken }
+  );
+  return outputToken;
+};
+function getPriceImpact(trade) {
+  let spotOutputAmount = CurrencyAmount.fromRawAmount(trade.outputAmount.currency.wrapped, 0);
+  for (const route of trade.routes) {
+    const { inputAmount } = route;
+    const midPrice = getMidPrice(route);
+    spotOutputAmount = spotOutputAmount.add(midPrice.quote(inputAmount.wrapped));
+  }
+  const priceImpact = spotOutputAmount.subtract(trade.outputAmount.wrapped).divide(spotOutputAmount);
+  return new Percent(priceImpact.numerator, priceImpact.denominator);
+}
+
+// evm/v3-router/utils/swapRouter.ts
+var ZERO8 = BigInt(0);
+var REFUND_ETH_PRICE_IMPACT_THRESHOLD = new Percent(BigInt(50), BigInt(100));
+var _SwapRouter = class {
+  /**
+   * Cannot be constructed.
+   */
+  // eslint-disable-next-line no-useless-constructor, @typescript-eslint/no-empty-function
+  constructor() {
+  }
+  /**
+   * @notice Generates the calldata for a Swap with a V2 Route.
+   * @param trade The V2Trade to encode.
+   * @param options SwapOptions to use for the trade.
+   * @param routerMustCustody Flag for whether funds should be sent to the router
+   * @param performAggregatedSlippageCheck Flag for whether we want to perform an aggregated slippage check
+   * @returns A string array of calldatas for the trade.
+   */
+  static encodeV2Swap(trade, options, routerMustCustody, performAggregatedSlippageCheck) {
+    const amountIn = maximumAmountIn(trade, options.slippageTolerance).quotient;
+    const amountOut = minimumAmountOut(trade, options.slippageTolerance).quotient;
+    const route = trade.routes[0];
+    const path = route.path.map((token) => token.wrapped.address);
+    const recipient = routerMustCustody ? ADDRESS_THIS : typeof options.recipient === "undefined" ? MSG_SENDER : validateAndParseAddress(options.recipient);
+    if (trade.tradeType === TradeType.EXACT_INPUT) {
+      if (trade.inputAmount.currency.isNative) {
+        const exactInputParams2 = [performAggregatedSlippageCheck ? BigInt(0) : amountOut, path, recipient];
+        return encodeFunctionData({
+          abi: _SwapRouter.ABI,
+          functionName: "swapExactETHForTokensSupportingFeeOnTransferTokens",
+          args: exactInputParams2
+        });
+      }
+      if (trade.outputAmount.currency.isNative) {
+        const exactInputParams2 = [
+          amountIn,
+          performAggregatedSlippageCheck ? BigInt(0) : amountOut,
+          path,
+          recipient
+        ];
+        return encodeFunctionData({
+          abi: _SwapRouter.ABI,
+          functionName: "swapExactTokensForETHSupportingFeeOnTransferTokens",
+          args: exactInputParams2
+        });
+      }
+      const exactInputParams = [amountIn, performAggregatedSlippageCheck ? BigInt(0) : amountOut, path, recipient];
+      return encodeFunctionData({
+        abi: _SwapRouter.ABI,
+        functionName: "swapExactTokensForTokensSupportingFeeOnTransferTokens",
+        args: exactInputParams
+      });
+    }
+    const exactOutputParams = [amountOut, amountIn, path, recipient];
+    return encodeFunctionData({
+      abi: _SwapRouter.ABI,
+      functionName: "swapExactTokensForTokensSupportingFeeOnTransferTokens",
+      args: exactOutputParams
+    });
+  }
+  /**
+   * @notice Generates the calldata for a Swap with a V3 Route.
+   * @param trade The V3Trade to encode.
+   * @param options SwapOptions to use for the trade.
+   * @param routerMustCustody Flag for whether funds should be sent to the router
+   * @param performAggregatedSlippageCheck Flag for whether we want to perform an aggregated slippage check
+   * @returns A string array of calldatas for the trade.
+   */
+  static encodeV3Swap(trade, options, routerMustCustody, performAggregatedSlippageCheck) {
+    const calldatas = [];
+    for (const route of trade.routes) {
+      const { inputAmount, outputAmount, pools, path } = route;
+      const amountIn = maximumAmountIn(trade, options.slippageTolerance, inputAmount).quotient;
+      const amountOut = minimumAmountOut(trade, options.slippageTolerance, outputAmount).quotient;
+      const singleHop = pools.length === 1;
+      const recipient = routerMustCustody ? ADDRESS_THIS : typeof options.recipient === "undefined" ? MSG_SENDER : validateAndParseAddress(options.recipient);
+      if (singleHop) {
+        if (trade.tradeType === TradeType.EXACT_INPUT) {
+          const exactInputSingleParams = {
+            tokenIn: path[0].wrapped.address,
+            tokenOut: path[1].wrapped.address,
+            recipient,
+            amountIn,
+            amountOutMinimum: performAggregatedSlippageCheck ? BigInt(0) : amountOut,
+            limitSqrtPrice: BigInt(0)
+          };
+          calldatas.push(
+            encodeFunctionData({
+              abi: _SwapRouter.ABI,
+              functionName: "exactInputSingle",
+              args: [exactInputSingleParams]
+            })
+          );
+        } else {
+          const exactOutputSingleParams = {
+            tokenIn: path[0].wrapped.address,
+            tokenOut: path[1].wrapped.address,
+            recipient,
+            amountOut,
+            amountInMaximum: amountIn,
+            limitSqrtPrice: BigInt(0)
+          };
+          calldatas.push(
+            encodeFunctionData({
+              abi: _SwapRouter.ABI,
+              functionName: "exactOutputSingle",
+              args: [exactOutputSingleParams]
+            })
+          );
+        }
+      } else {
+        const pathStr = encodeMixedRouteToPath(
+          { ...route, input: inputAmount.currency, output: outputAmount.currency },
+          trade.tradeType === TradeType.EXACT_OUTPUT
+        );
+        if (trade.tradeType === TradeType.EXACT_INPUT) {
+          const exactInputParams = {
+            path: pathStr,
+            recipient,
+            amountIn,
+            amountOutMinimum: performAggregatedSlippageCheck ? BigInt(0) : amountOut
+          };
+          calldatas.push(
+            encodeFunctionData({
+              abi: _SwapRouter.ABI,
+              functionName: "exactInput",
+              args: [exactInputParams]
+            })
+          );
+        } else {
+          const exactOutputParams = {
+            path: pathStr,
+            recipient,
+            amountOut,
+            amountInMaximum: amountIn
+          };
+          calldatas.push(
+            encodeFunctionData({
+              abi: _SwapRouter.ABI,
+              functionName: "exactOutput",
+              args: [exactOutputParams]
+            })
+          );
+        }
+      }
+    }
+    return calldatas;
+  }
+  /**
+   * @notice Generates the calldata for a MixedRouteSwap. Since single hop routes are not MixedRoutes, we will instead generate
+   *         them via the existing encodeV3Swap and encodeV2Swap methods.
+   * @param trade The MixedRouteTrade to encode.
+   * @param options SwapOptions to use for the trade.
+   * @param routerMustCustody Flag for whether funds should be sent to the router
+   * @param performAggregatedSlippageCheck Flag for whether we want to perform an aggregated slippage check
+   * @returns A string array of calldatas for the trade.
+   */
+  static encodeMixedRouteSwap(trade, options, routerMustCustody, performAggregatedSlippageCheck) {
+    let calldatas = [];
+    const isExactIn = trade.tradeType === TradeType.EXACT_INPUT;
+    for (const route of trade.routes) {
+      const { inputAmount, outputAmount, pools } = route;
+      const amountIn = maximumAmountIn(trade, options.slippageTolerance, inputAmount).quotient;
+      const amountOut = minimumAmountOut(trade, options.slippageTolerance, outputAmount).quotient;
+      const singleHop = pools.length === 1;
+      const recipient = routerMustCustody ? ADDRESS_THIS : typeof options.recipient === "undefined" ? MSG_SENDER : validateAndParseAddress(options.recipient);
+      const mixedRouteIsAllV3 = (r) => {
+        return r.pools.every(isV3Pool);
+      };
+      const mixedRouteIsAllV2 = (r) => {
+        return r.pools.every(isV2Pool);
+      };
+      if (singleHop) {
+        if (mixedRouteIsAllV3(route)) {
+          calldatas = [
+            ...calldatas,
+            ..._SwapRouter.encodeV3Swap(
+              {
+                ...trade,
+                routes: [route],
+                inputAmount,
+                outputAmount
+              },
+              options,
+              routerMustCustody,
+              performAggregatedSlippageCheck
+            )
+          ];
+        } else if (mixedRouteIsAllV2(route)) {
+          calldatas = [
+            ...calldatas,
+            _SwapRouter.encodeV2Swap(
+              {
+                ...trade,
+                routes: [route],
+                inputAmount,
+                outputAmount
+              },
+              options,
+              routerMustCustody,
+              performAggregatedSlippageCheck
+            )
+          ];
+        } else {
+          throw new Error("Unsupported route to encode");
+        }
+      } else {
+        const sections = partitionMixedRouteByProtocol(route);
+        const isLastSectionInRoute = (i) => {
+          return i === sections.length - 1;
+        };
+        let outputToken;
+        let inputToken = inputAmount.currency.wrapped;
+        for (let i = 0; i < sections.length; i++) {
+          const section = sections[i];
+          outputToken = getOutputOfPools(section, inputToken);
+          const newRoute = buildBaseRoute([...section], inputToken, outputToken);
+          inputToken = outputToken.wrapped;
+          const lastSectionInRoute = isLastSectionInRoute(i);
+          const recipientAddress = lastSectionInRoute ? recipient : ADDRESS_THIS;
+          const inAmount = i === 0 ? amountIn : BigInt(0);
+          const outAmount = !lastSectionInRoute ? BigInt(0) : amountOut;
+          if (mixedRouteIsAllV3(newRoute)) {
+            const pathStr = encodeMixedRouteToPath(newRoute, !isExactIn);
+            if (isExactIn) {
+              const exactInputParams = {
+                path: pathStr,
+                recipient: recipientAddress,
+                amountIn: inAmount,
+                amountOutMinimum: outAmount
+              };
+              calldatas.push(
+                encodeFunctionData({
+                  abi: _SwapRouter.ABI,
+                  functionName: "exactInput",
+                  args: [exactInputParams]
+                })
+              );
+            } else {
+              const exactOutputParams = {
+                path: pathStr,
+                recipient,
+                amountOut: outAmount,
+                amountInMaximum: inAmount
+              };
+              calldatas.push(
+                encodeFunctionData({
+                  abi: _SwapRouter.ABI,
+                  functionName: "exactOutput",
+                  args: [exactOutputParams]
+                })
+              );
+            }
+          } else if (mixedRouteIsAllV2(newRoute)) {
+            const path = newRoute.path.map((token) => token.wrapped.address);
+            if (isExactIn) {
+              if (trade.inputAmount.currency.isNative) {
+                const exactInputParams = [performAggregatedSlippageCheck ? BigInt(0) : amountOut, path, recipient];
+                calldatas.push(encodeFunctionData({
+                  abi: _SwapRouter.ABI,
+                  functionName: "swapExactETHForTokensSupportingFeeOnTransferTokens",
+                  args: exactInputParams
+                }));
+              } else if (trade.outputAmount.currency.isNative) {
+                const exactInputParams = [amountIn, performAggregatedSlippageCheck ? BigInt(0) : amountOut, path, recipient];
+                calldatas.push(encodeFunctionData({ abi: _SwapRouter.ABI, functionName: "swapExactTokensForETHSupportingFeeOnTransferTokens", args: exactInputParams }));
+              } else {
+                const exactInputParams = [amountIn, performAggregatedSlippageCheck ? BigInt(0) : amountOut, path, recipient];
+                calldatas.push(encodeFunctionData({ abi: _SwapRouter.ABI, functionName: "swapExactTokensForTokensSupportingFeeOnTransferTokens", args: exactInputParams }));
+              }
+            } else {
+              const exactOutputParams = [outAmount, inAmount, path, recipientAddress];
+              calldatas.push(
+                encodeFunctionData({
+                  abi: _SwapRouter.ABI,
+                  functionName: "swapExactTokensForTokensSupportingFeeOnTransferTokens",
+                  args: exactOutputParams
+                })
+              );
+            }
+          } else {
+            throw new Error("Unsupported route");
+          }
+        }
+      }
+    }
+    return calldatas;
+  }
+  static encodeSwaps(anyTrade, options, isSwapAndAdd) {
+    const trades = !Array.isArray(anyTrade) ? [anyTrade] : anyTrade;
+    const numberOfTrades = trades.reduce((numOfTrades, trade) => numOfTrades + trade.routes.length, 0);
+    const sampleTrade = trades[0];
+    invariant5(
+      trades.every((trade) => trade.inputAmount.currency.equals(sampleTrade.inputAmount.currency)),
+      "TOKEN_IN_DIFF"
+    );
+    invariant5(
+      trades.every((trade) => trade.outputAmount.currency.equals(sampleTrade.outputAmount.currency)),
+      "TOKEN_OUT_DIFF"
+    );
+    invariant5(
+      trades.every((trade) => trade.tradeType === sampleTrade.tradeType),
+      "TRADE_TYPE_DIFF"
+    );
+    const calldatas = [];
+    const inputIsNative = sampleTrade.inputAmount.currency.isNative;
+    const outputIsNative = sampleTrade.outputAmount.currency.isNative;
+    const performAggregatedSlippageCheck = sampleTrade.tradeType === TradeType.EXACT_INPUT && numberOfTrades > 2;
+    const routerMustCustody = outputIsNative || !!options.fee || !!isSwapAndAdd || performAggregatedSlippageCheck;
+    if (options.inputTokenPermit) {
+      invariant5(sampleTrade.inputAmount.currency.isToken, "NON_TOKEN_PERMIT");
+      calldatas.push(SelfPermit.encodePermit(sampleTrade.inputAmount.currency, options.inputTokenPermit));
+    }
+    for (const trade of trades) {
+      if (trade.routes.length === 1 && trade.routes[0].type === 0 /* V2 */) {
+        calldatas.push(_SwapRouter.encodeV2Swap(trade, options, routerMustCustody, performAggregatedSlippageCheck));
+      } else if (trade.routes.every((r) => r.type === 1 /* V3 */)) {
+        for (const calldata of _SwapRouter.encodeV3Swap(
+          trade,
+          options,
+          routerMustCustody,
+          performAggregatedSlippageCheck
+        )) {
+          calldatas.push(calldata);
+        }
+      } else {
+        for (const calldata of _SwapRouter.encodeMixedRouteSwap(
+          trade,
+          options,
+          routerMustCustody,
+          performAggregatedSlippageCheck
+        )) {
+          calldatas.push(calldata);
+        }
+      }
+    }
+    const ZERO_IN = CurrencyAmount.fromRawAmount(sampleTrade.inputAmount.currency, 0);
+    const ZERO_OUT = CurrencyAmount.fromRawAmount(sampleTrade.outputAmount.currency, 0);
+    const minAmountOut = trades.reduce(
+      (sum2, trade) => sum2.add(minimumAmountOut(trade, options.slippageTolerance)),
+      ZERO_OUT
+    );
+    const quoteAmountOut = trades.reduce(
+      (sum2, trade) => sum2.add(trade.outputAmount),
+      ZERO_OUT
+    );
+    const totalAmountIn = trades.reduce(
+      (sum2, trade) => sum2.add(maximumAmountIn(trade, options.slippageTolerance)),
+      ZERO_IN
+    );
+    return {
+      calldatas,
+      sampleTrade,
+      routerMustCustody,
+      inputIsNative,
+      outputIsNative,
+      totalAmountIn,
+      minimumAmountOut: minAmountOut,
+      quoteAmountOut
+    };
+  }
+  /**
+   * Produces the on-chain method name to call and the hex encoded parameters to pass as arguments for a given trade.
+   * @param trades to produce call parameters for
+   * @param options options for the call parameters
+   */
+  static swapCallParameters(trades, options) {
+    const {
+      calldatas,
+      sampleTrade,
+      routerMustCustody,
+      inputIsNative,
+      outputIsNative,
+      totalAmountIn,
+      minimumAmountOut: minAmountOut
+    } = _SwapRouter.encodeSwaps(trades, options);
+    if (routerMustCustody) {
+      if (outputIsNative) {
+        calldatas.push(PaymentsExtended.encodeUnwrapWETH9(minAmountOut.quotient, options.recipient, options.fee));
+      } else {
+        calldatas.push(
+          PaymentsExtended.encodeSweepToken(
+            sampleTrade.outputAmount.currency.wrapped,
+            minAmountOut.quotient,
+            options.recipient,
+            options.fee
+          )
+        );
+      }
+    }
+    if (inputIsNative && (sampleTrade.tradeType === TradeType.EXACT_OUTPUT || _SwapRouter.riskOfPartialFill(trades))) {
+      calldatas.push(Payments.encodeRefundETH());
+    }
+    return {
+      calldata: MulticallExtended.encodeMulticall(calldatas, options.deadlineOrPreviousBlockhash),
+      value: toHex(inputIsNative ? totalAmountIn.quotient : ZERO8)
+    };
+  }
+  /**
+   * Produces the on-chain method name to call and the hex encoded parameters to pass as arguments for a given trade.
+   * @param trades to produce call parameters for
+   * @param options options for the call parameters
+   */
+  static swapAndAddCallParameters(trades, options, position, addLiquidityOptions, tokenInApprovalType, tokenOutApprovalType) {
+    const {
+      calldatas,
+      inputIsNative,
+      outputIsNative,
+      sampleTrade,
+      totalAmountIn: totalAmountSwapped,
+      quoteAmountOut,
+      minimumAmountOut: minAmountOut
+    } = _SwapRouter.encodeSwaps(trades, options, true);
+    if (options.outputTokenPermit) {
+      invariant5(quoteAmountOut.currency.isToken, "NON_TOKEN_PERMIT_OUTPUT");
+      calldatas.push(SelfPermit.encodePermit(quoteAmountOut.currency, options.outputTokenPermit));
+    }
+    const zeroForOne = position.pool.token0.wrapped.address === totalAmountSwapped.currency.wrapped.address;
+    const { positionAmountIn, positionAmountOut } = _SwapRouter.getPositionAmounts(position, zeroForOne);
+    const tokenIn = inputIsNative ? holeskyTokens.weth : positionAmountIn.currency.wrapped;
+    const tokenOut = outputIsNative ? holeskyTokens.weth : positionAmountOut.currency.wrapped;
+    const amountOutRemaining = positionAmountOut.subtract(quoteAmountOut.wrapped);
+    if (amountOutRemaining.greaterThan(CurrencyAmount.fromRawAmount(positionAmountOut.currency, 0))) {
+      if (outputIsNative) {
+        calldatas.push(PaymentsExtended.encodeWrapETH(amountOutRemaining.quotient));
+      } else {
+        calldatas.push(PaymentsExtended.encodePull(tokenOut, amountOutRemaining.quotient));
+      }
+    }
+    if (inputIsNative) {
+      calldatas.push(PaymentsExtended.encodeWrapETH(positionAmountIn.quotient));
+    } else {
+      calldatas.push(PaymentsExtended.encodePull(tokenIn, positionAmountIn.quotient));
+    }
+    if (tokenInApprovalType !== 0 /* NOT_REQUIRED */)
+      calldatas.push(ApproveAndCall.encodeApprove(tokenIn, tokenInApprovalType));
+    if (tokenOutApprovalType !== 0 /* NOT_REQUIRED */)
+      calldatas.push(ApproveAndCall.encodeApprove(tokenOut, tokenOutApprovalType));
+    const minimalPosition = Position.fromAmounts({
+      pool: position.pool,
+      tickLower: position.tickLower,
+      tickUpper: position.tickUpper,
+      amount0: zeroForOne ? position.amount0.quotient.toString() : minAmountOut.quotient.toString(),
+      amount1: zeroForOne ? minAmountOut.quotient.toString() : position.amount1.quotient.toString(),
+      useFullPrecision: false
+    });
+    calldatas.push(
+      ApproveAndCall.encodeAddLiquidity(position, minimalPosition, addLiquidityOptions, options.slippageTolerance)
+    );
+    if (inputIsNative) {
+      calldatas.push(PaymentsExtended.encodeUnwrapWETH9(ZERO8));
+    } else {
+      calldatas.push(PaymentsExtended.encodeSweepToken(tokenIn, ZERO8));
+    }
+    if (outputIsNative) {
+      calldatas.push(PaymentsExtended.encodeUnwrapWETH9(ZERO8));
+    } else {
+      calldatas.push(PaymentsExtended.encodeSweepToken(tokenOut, ZERO8));
+    }
+    let value;
+    if (inputIsNative) {
+      value = totalAmountSwapped.wrapped.add(positionAmountIn.wrapped).quotient;
+    } else if (outputIsNative) {
+      value = amountOutRemaining.quotient;
+    } else {
+      value = ZERO8;
+    }
+    return {
+      calldata: MulticallExtended.encodeMulticall(calldatas, options.deadlineOrPreviousBlockhash),
+      value: toHex(value.toString())
+    };
+  }
+  // if price impact is very high, there's a chance of hitting max/min prices resulting in a partial fill of the swap
+  static riskOfPartialFill(trades) {
+    if (Array.isArray(trades)) {
+      return trades.some((trade) => {
+        return _SwapRouter.v3TradeWithHighPriceImpact(trade);
+      });
+    }
+    return _SwapRouter.v3TradeWithHighPriceImpact(trades);
+  }
+  static v3TradeWithHighPriceImpact(trade) {
+    return !(trade.routes.length === 1 && trade.routes[0].type === 0 /* V2 */) && getPriceImpact(trade).greaterThan(REFUND_ETH_PRICE_IMPACT_THRESHOLD);
+  }
+  static getPositionAmounts(position, zeroForOne) {
+    const { amount0, amount1 } = position.mintAmounts;
+    const currencyAmount0 = CurrencyAmount.fromRawAmount(position.pool.token0, amount0);
+    const currencyAmount1 = CurrencyAmount.fromRawAmount(position.pool.token1, amount1);
+    const [positionAmountIn, positionAmountOut] = zeroForOne ? [currencyAmount0, currencyAmount1] : [currencyAmount1, currencyAmount0];
+    return { positionAmountIn, positionAmountOut };
+  }
+};
+var SwapRouter = _SwapRouter;
+SwapRouter.ABI = swapRouter02Abi;
+
+export { ADDITIONAL_BASES, ADDRESS_THIS, BASES_TO_CHECK_TRADES_AGAINST, BASE_SWAP_COST_STABLE_SWAP, BASE_SWAP_COST_V2, BASE_SWAP_COST_V3, BATCH_MULTICALL_CONFIGS, BETTER_TRADE_LESS_HOPS_THRESHOLD, BIG_INT_TEN, BIPS_BASE, COST_PER_EXTRA_HOP_STABLE_SWAP, COST_PER_EXTRA_HOP_V2, COST_PER_HOP_V3, COST_PER_INIT_TICK, COST_PER_UNINIT_TICK, CUSTOM_BASES, MIN_BNB, MIXED_ROUTE_QUOTER_ADDRESSES, MSG_SENDER, PoolType, RouteType, SMART_ROUTER_ADDRESSES, STABLE_SWAP_INFO_ADDRESS, smartRouter_exports as SmartRouter, stableSwap_exports as StableSwap, SwapRouter, transformer_exports as Transformer, V2_FEE_PATH_PLACEHOLDER, V2_ROUTER_ADDRESS, V3_QUOTER_ADDRESSES, getStableSwapPools, isStableSwapSupported, usdGasTokensByChain };
